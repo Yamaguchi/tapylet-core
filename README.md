@@ -167,8 +167,22 @@ const wallet = await walletStorage.getWallet()
 | `@tapylet/core/api` | `getBalance`, `getAllBalances`, `getAddressUtxos`, `broadcastTransaction`, `getTransactionInfo`, `getTokenMetadata`, `formatTpc`, `formatColorId`, `TPC_COLOR_ID`, … |
 | `@tapylet/core/storage/*` | `WalletStorage`, `IssuedTokenStore`, `PendingTxStore`, `SettingsStore`, `KeyValueStore`, `SecureKeyValueStore` |
 | `@tapylet/core` (types/constants) | `WalletData`, `WalletState`, `DEFAULT_AUTO_LOCK_MINUTES`, `AUTO_LOCK_OPTIONS`, … |
+| `@tapylet/core/utils/sanitize` | `sanitizeUrl`, `sanitizeImageUrl` |
 
 All subpaths are also reachable from the root barrel `@tapylet/core`.
+
+### URL sanitization
+
+Token metadata is written by the issuer, and any issuer can send a token to any
+address, so URLs read out of metadata are untrusted. Pass them through the
+sanitizers before rendering.
+
+- `sanitizeUrl` accepts `https:`, `http:` and `ipfs:`, and prefixes `https://`
+  when the input carries no scheme. Everything else, `javascript:` and `data:`
+  included, returns `undefined`.
+- `sanitizeImageUrl` accepts `https:` and `data:` URLs holding a raster image
+  (`png`, `jpeg`, `jpg`, `gif`, `webp`). `http:`, `ipfs:` and
+  `data:image/svg+xml` return `undefined`.
 
 ## Development
 

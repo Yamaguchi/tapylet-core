@@ -31,23 +31,41 @@ export const sanitizeUrl = (url: string | undefined): string | undefined => {
   return url.trim()
 }
 
+// Raster image media types accepted in a data: URL. image/svg+xml is excluded:
+// an SVG document can carry script, so it is only inert while the consumer
+// renders it through <img>. Keeping it out means the guard does not depend on
+// how the consumer renders the image.
+const ALLOWED_IMAGE_DATA_MEDIA_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+]
+
 /**
- * Sanitize image URL - allows data: URLs for images only with safe mime types
+ * Sanitize image URL - allows https: URLs and data: URLs holding a raster image
  */
 export const sanitizeImageUrl = (url: string | undefined): string | undefined => {
   if (!url) return undefined
 
-  const trimmed = url.trim().toLowerCase()
+  const trimmed = url.trim()
+  const lowered = trimmed.toLowerCase()
 
-  // Allow data URIs for images with safe mime types
-  if (trimmed.startsWith("data:image/")) {
-    const mimeMatch = trimmed.match(/^data:image\/(png|jpeg|jpg|gif|webp|svg\+xml);/)
-    if (mimeMatch) {
-      return url.trim()
+  if (lowered.startsWith("data:")) {
+    const mediaType = lowered.match(/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)[;,]/)?.[1]
+    if (mediaType && ALLOWED_IMAGE_DATA_MEDIA_TYPES.includes(mediaType)) {
+      return trimmed
     }
     return undefined
   }
 
-  // For other URLs, use standard sanitization
-  return sanitizeUrl(url)
+  // http: can be swapped for another image in transit and ipfs: is not a scheme
+  // the platform can fetch on its own, so images are limited to https:.
+  const sanitized = sanitizeUrl(trimmed)
+  if (!sanitized || !sanitized.toLowerCase().startsWith("https://")) {
+    return undefined
+  }
+
+  return sanitized
 }

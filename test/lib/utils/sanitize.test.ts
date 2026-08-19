@@ -10,8 +10,18 @@ describe('sanitizeUrl', () => {
     expect(sanitizeUrl('ipfs://cid/a')).toBe('ipfs://cid/a')
   })
 
+  it('keeps the case of the scheme as it was given', () => {
+    expect(sanitizeUrl('HTTPS://example.com/a')).toBe('HTTPS://example.com/a')
+  })
+
   it('assumes https when the URL carries no scheme', () => {
     expect(sanitizeUrl('example.com/a')).toBe('https://example.com/a')
+  })
+
+  it('reads a colon followed by a port as part of the host, not as a scheme', () => {
+    expect(sanitizeUrl('example.com:8080/a')).toBe('https://example.com:8080/a')
+    expect(sanitizeUrl('example.com:8080')).toBe('https://example.com:8080')
+    expect(sanitizeUrl('localhost:3000/a')).toBe('https://localhost:3000/a')
   })
 
   it('rejects script-bearing and data schemes', () => {
@@ -21,9 +31,16 @@ describe('sanitizeUrl', () => {
     expect(sanitizeUrl('ftp://example.com/a')).toBeUndefined()
   })
 
+  it('rejects any other scheme instead of prefixing https', () => {
+    expect(sanitizeUrl('mailto:foo@example.com')).toBeUndefined()
+    expect(sanitizeUrl('tel:0312345678')).toBeUndefined()
+    expect(sanitizeUrl('file:///etc/passwd')).toBeUndefined()
+  })
+
   it('rejects empty input', () => {
     expect(sanitizeUrl(undefined)).toBeUndefined()
     expect(sanitizeUrl('')).toBeUndefined()
+    expect(sanitizeUrl('   ')).toBeUndefined()
   })
 })
 
@@ -31,6 +48,10 @@ describe('sanitizeImageUrl', () => {
   it('accepts https URLs and trims surrounding space', () => {
     expect(sanitizeImageUrl('https://example.com/a.png')).toBe('https://example.com/a.png')
     expect(sanitizeImageUrl('  https://example.com/a.png  ')).toBe('https://example.com/a.png')
+  })
+
+  it('accepts an https URL whose scheme is in upper case', () => {
+    expect(sanitizeImageUrl('HTTPS://example.com/a.png')).toBe('HTTPS://example.com/a.png')
   })
 
   it('assumes https when the URL carries no scheme', () => {
@@ -43,12 +64,29 @@ describe('sanitizeImageUrl', () => {
     expect(sanitizeImageUrl('ipfs://cid/a.png')).toBeUndefined()
   })
 
+  it('rejects any other scheme instead of prefixing https', () => {
+    expect(sanitizeImageUrl('mailto:foo@example.com')).toBeUndefined()
+    expect(sanitizeImageUrl('file:///etc/passwd')).toBeUndefined()
+  })
+
   it('accepts data URLs holding a raster image', () => {
     const png = 'data:image/png;base64,iVBORw0KGgo='
     expect(sanitizeImageUrl(png)).toBe(png)
     expect(sanitizeImageUrl('data:image/gif,GIF89a')).toBe('data:image/gif,GIF89a')
     expect(sanitizeImageUrl('data:IMAGE/WEBP;base64,UklGRg==')).toBe(
       'data:IMAGE/WEBP;base64,UklGRg=='
+    )
+  })
+
+  it('accepts a data URL carrying a parameter after the media type', () => {
+    expect(sanitizeImageUrl('data:image/png;charset=utf-8;base64,AAAA')).toBe(
+      'data:image/png;charset=utf-8;base64,AAAA'
+    )
+  })
+
+  it('trims the space around a data URL', () => {
+    expect(sanitizeImageUrl('  data:image/png;base64,AAAA  ')).toBe(
+      'data:image/png;base64,AAAA'
     )
   })
 
@@ -75,5 +113,6 @@ describe('sanitizeImageUrl', () => {
   it('rejects empty input', () => {
     expect(sanitizeImageUrl(undefined)).toBeUndefined()
     expect(sanitizeImageUrl('')).toBeUndefined()
+    expect(sanitizeImageUrl('   ')).toBeUndefined()
   })
 })

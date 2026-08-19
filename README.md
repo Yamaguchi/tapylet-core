@@ -180,9 +180,10 @@ sanitizers before rendering.
 - `sanitizeUrl` accepts `https:`, `http:` and `ipfs:`, and prefixes `https://`
   when the input carries no scheme. Everything else, `javascript:` and `data:`
   included, returns `undefined`.
-- `sanitizeImageUrl` accepts `https:` and `data:` URLs holding a raster image
-  (`png`, `jpeg`, `jpg`, `gif`, `webp`). `http:`, `ipfs:` and
-  `data:image/svg+xml` return `undefined`.
+- `sanitizeImageUrl` accepts `https:` URLs and `data:` URLs holding a raster
+  image (`png`, `jpeg`, `jpg`, `gif`, `webp`), and prefixes `https://` when the
+  input carries no scheme. `http:`, `ipfs:` and `data:image/svg+xml` return
+  `undefined`.
 
 ## Development
 

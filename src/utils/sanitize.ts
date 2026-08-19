@@ -1,40 +1,41 @@
+// Schemes accepted as they are. Everything else, javascript: and data:
+// included, is rejected.
+const ALLOWED_URL_SCHEMES = ["https:", "http:", "ipfs:"]
+
+const SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:/i
+
+// "example.com:8080/a" carries a port, not a scheme. A host name followed by a
+// colon, digits, and then a path delimiter or the end of the string is a port.
+// The host must look like a host, otherwise "tel:0312345678" would read as one.
+const HOST_WITH_PORT_PATTERN = /^(?:localhost|[a-z0-9-]+(?:\.[a-z0-9-]+)+):\d+([/?#]|$)/i
+
+const schemeOf = (url: string): string | undefined => {
+  if (HOST_WITH_PORT_PATTERN.test(url)) return undefined
+  return url.match(SCHEME_PATTERN)?.[0].toLowerCase()
+}
+
 /**
  * Sanitize URL to prevent XSS attacks via javascript: or data: URLs
  */
 export const sanitizeUrl = (url: string | undefined): string | undefined => {
   if (!url) return undefined
 
-  const trimmed = url.trim().toLowerCase()
+  const trimmed = url.trim()
+  if (!trimmed) return undefined
 
-  // Block dangerous URL schemes
-  if (
-    trimmed.startsWith("javascript:") ||
-    trimmed.startsWith("data:") ||
-    trimmed.startsWith("vbscript:")
-  ) {
-    return undefined
-  }
+  const scheme = schemeOf(trimmed)
 
-  // Only allow http, https, and ipfs URLs
-  if (
-    !trimmed.startsWith("http://") &&
-    !trimmed.startsWith("https://") &&
-    !trimmed.startsWith("ipfs://")
-  ) {
-    // If no scheme, assume https
-    if (!trimmed.includes("://")) {
-      return `https://${url.trim()}`
-    }
-    return undefined
-  }
+  // If no scheme, assume https
+  if (!scheme) return `https://${trimmed}`
 
-  return url.trim()
+  return ALLOWED_URL_SCHEMES.includes(scheme) ? trimmed : undefined
 }
 
 // Raster image media types accepted in a data: URL. image/svg+xml is excluded:
 // an SVG document can carry script, so it is only inert while the consumer
-// renders it through <img>. Keeping it out means the guard does not depend on
-// how the consumer renders the image.
+// renders it through <img>. The media type is what the URL declares about
+// itself and the payload behind it is not checked, so a consumer that renders
+// the image some other way needs its own guard.
 const ALLOWED_IMAGE_DATA_MEDIA_TYPES = [
   "image/png",
   "image/jpeg",

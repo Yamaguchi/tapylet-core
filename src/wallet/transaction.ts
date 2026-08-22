@@ -53,7 +53,9 @@ const selectUtxos = (
     selectedUtxos.push(utxo)
     totalInput += utxo.value
 
-    const fee = (baseSize + selectedUtxos.length * P2PKH_INPUT_SIZE) * feeRate
+    // Round up so the fee stays an integer for non-integer fee rates;
+    // output amounts must be integers.
+    const fee = Math.ceil((baseSize + selectedUtxos.length * P2PKH_INPUT_SIZE) * feeRate)
     if (totalInput >= targetAmount + fee) {
       return { selectedUtxos, totalInput, fee }
     }

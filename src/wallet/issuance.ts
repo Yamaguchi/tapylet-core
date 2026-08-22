@@ -96,8 +96,10 @@ const selectUtxosForIssuance = (
     selectedUtxos.push(utxo)
     totalInput += utxo.value
 
-    // The funding transaction has 2 p2pkh outputs (P2C + change)
-    const fee = estimateTxSize(selectedUtxos.length, 2) * feeRate
+    // The funding transaction has 2 p2pkh outputs (P2C + change).
+    // Round up so the fee stays an integer for non-integer fee rates;
+    // output amounts must be integers.
+    const fee = Math.ceil(estimateTxSize(selectedUtxos.length, 2) * feeRate)
     if (totalInput >= targetAmount + fee) {
       return { selectedUtxos, totalInput, fee }
     }
@@ -195,7 +197,9 @@ const issueTokenInternal = async (
   // Tx2 fee: 1 P2C input + 1 input for fee, N colored outputs (one per split)
   // + 1 p2pkh change output
   const tx2EstimatedSize = estimateTxSize(2, 1, splitOutputs.length)
-  const tx2Fee = tx2EstimatedSize * feeRate
+  // Round up so the fee stays an integer for non-integer fee rates;
+  // output amounts must be integers.
+  const tx2Fee = Math.ceil(tx2EstimatedSize * feeRate)
 
   // Tx1 must leave enough change to fund tx2's fee, and that change output
   // must clear the dust threshold to be added at all. Tx1's own fee is

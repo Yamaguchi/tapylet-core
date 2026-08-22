@@ -507,6 +507,27 @@ describe('transaction', () => {
       expect(fee).toBeGreaterThanOrEqual(txByteSize(result.txHex) * DEFAULT_FEE_RATE)
     })
 
+    it('rounds the fee up to an integer for non-integer fee rates', async () => {
+      const utxos = [...mockTpcUtxos, ...mockColoredUtxos]
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      // Full transfer (no asset change): odd base size of 261 bytes
+      // (1 asset input, 1 colored output, 1 TPC change output)
+      const result = await createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 1000,
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+        feeRate: 1.5,
+      })
+
+      const fee = paidTpcFee(result.txHex, utxos)
+      expect(Number.isInteger(fee)).toBe(true)
+      const expectedFee = Math.ceil((estimateTxSize(1, 1, 1) + P2PKH_INPUT_SIZE) * 1.5)
+      expect(fee).toBe(expectedFee)
+    })
+
     it('creates a TPC change output above dust when burning all tokens', async () => {
       const tpcUtxos: esplora.Utxo[] = [{
         txid: 'a'.repeat(64),

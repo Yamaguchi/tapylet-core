@@ -3,7 +3,16 @@ import { Metadata } from "tapyrusjs-lib"
 import * as ecc from "../lib/secp256k1-compat"
 import { getAddressUtxos, broadcastTransaction, isTpcColorId, type Utxo } from "../api/esplora"
 import { getKeyPairFromMnemonic } from "./hdwallet"
-import { DUST_THRESHOLD, DEFAULT_FEE_RATE } from "../constants/transaction"
+import { isValidFeeRate } from "../utils/validation"
+import { DUST_THRESHOLD, DEFAULT_FEE_RATE, estimateTxSize } from "../constants/transaction"
+
+export {
+  TX_OVERHEAD,
+  P2PKH_INPUT_SIZE,
+  P2PKH_OUTPUT_SIZE,
+  COLORED_OUTPUT_SIZE,
+  estimateTxSize,
+} from "../constants/transaction"
 
 export type TokenType = "reissuable" | "non_reissuable" | "nft"
 
@@ -48,27 +57,6 @@ export interface IssueOptions {
 // Mirrors the Tapyrus API `split` upper bound.
 export const MAX_SPLIT = 100
 
-// Byte-size estimates for legacy (non-SegWit) P2PKH transactions.
-// See https://en.bitcoin.it/wiki/Maximum_transaction_rate (in*148 + out*34 + 10).
-export const TX_OVERHEAD = 10 // version(4) + in count(1) + out count(1) + locktime(4)
-export const P2PKH_INPUT_SIZE = 148 // 32 txid + 4 vout + 1 len + ~107 scriptSig + 4 seq
-export const P2PKH_OUTPUT_SIZE = 34 // 8 value + 1 len + 25 script
-// A cp2pkh output additionally carries a 33-byte colorId plus OP_COLOR:
-// 8 value + 1 len + 60 script = 69 bytes.
-export const COLORED_OUTPUT_SIZE = 69
-
-// Estimate the byte size of a legacy P2PKH transaction. `coloredOutputs` counts
-// cp2pkh outputs, which are larger than plain p2pkh outputs.
-export const estimateTxSize = (
-  inputs: number,
-  p2pkhOutputs: number,
-  coloredOutputs = 0
-): number =>
-  TX_OVERHEAD +
-  P2PKH_INPUT_SIZE * inputs +
-  P2PKH_OUTPUT_SIZE * p2pkhOutputs +
-  COLORED_OUTPUT_SIZE * coloredOutputs
-
 // Distribute `amount` across `split` outputs as evenly as possible.
 // The remainder is added to the last output,
 // and when amount < split only `amount` outputs of 1 are created.
@@ -103,14 +91,13 @@ const selectUtxosForIssuance = (
 
   const selectedUtxos: Utxo[] = []
   let totalInput = 0
-  let estimatedSize = 10 + 34 * 2 // base + 2 outputs (colored + change)
 
   for (const utxo of sorted) {
     selectedUtxos.push(utxo)
     totalInput += utxo.value
-    estimatedSize += 148 // input size
 
-    const fee = estimatedSize * feeRate
+    // The funding transaction has 2 p2pkh outputs (P2C + change)
+    const fee = estimateTxSize(selectedUtxos.length, 2) * feeRate
     if (totalInput >= targetAmount + fee) {
       return { selectedUtxos, totalInput, fee }
     }
@@ -132,6 +119,9 @@ export const issueToken = async (options: IssueOptions): Promise<IssueResult> =>
 
   if (!Number.isInteger(amount) || amount <= 0) {
     throw new Error("Amount must be a positive integer")
+  }
+  if (!isValidFeeRate(feeRate)) {
+    throw new Error("Invalid fee rate")
   }
 
   // NFTs are indivisible; any other token may be split across outputs.
@@ -202,21 +192,18 @@ const issueTokenInternal = async (
   // Amount to send to P2C address (dust threshold)
   const p2cAmount = DUST_THRESHOLD
 
-  // Estimate fees for both transactions
-  // Tx1: 1 input, 2 p2pkh outputs (P2C + change)
-  const tx1EstimatedSize = estimateTxSize(1, 2)
-  const tx1Fee = tx1EstimatedSize * feeRate
-
-  // Tx2: 1 P2C input + 1 input for fee, N colored outputs (one per split)
+  // Tx2 fee: 1 P2C input + 1 input for fee, N colored outputs (one per split)
   // + 1 p2pkh change output
   const tx2EstimatedSize = estimateTxSize(2, 1, splitOutputs.length)
   const tx2Fee = tx2EstimatedSize * feeRate
 
-  // Total needed: P2C amount + both fees
-  const totalNeeded = p2cAmount + tx1Fee + tx2Fee
+  // Tx1 must leave enough change to fund tx2's fee, and that change output
+  // must clear the dust threshold to be added at all. Tx1's own fee is
+  // computed inside the selection from the actual number of inputs.
+  const totalNeeded = p2cAmount + Math.max(tx2Fee, DUST_THRESHOLD)
 
-  const selection = selectUtxosForIssuance(tpcUtxos, totalNeeded, feeRate)
-  const { selectedUtxos, totalInput } = selection
+  const { selectedUtxos, totalInput, fee: tx1Fee } =
+    selectUtxosForIssuance(tpcUtxos, totalNeeded, feeRate)
 
   // --- Transaction 1: Send to P2C address ---
   const txb1 = new tapyrus.TransactionBuilder(network)

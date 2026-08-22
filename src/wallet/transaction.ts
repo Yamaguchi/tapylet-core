@@ -2,8 +2,13 @@ import * as tapyrus from "tapyrusjs-lib"
 import { getAddressUtxos, broadcastTransaction, isTpcColorId, type Utxo } from "../api/esplora"
 import { getKeyPairFromMnemonic } from "./hdwallet"
 import { validateAddress } from "./address"
-import { isValidAmount, MAX_COLORED_AMOUNT } from "../utils/validation"
-import { DUST_THRESHOLD, DEFAULT_FEE_RATE } from "../constants/transaction"
+import { isValidAmount, isValidFeeRate, MAX_COLORED_AMOUNT } from "../utils/validation"
+import {
+  DUST_THRESHOLD,
+  DEFAULT_FEE_RATE,
+  P2PKH_INPUT_SIZE,
+  estimateTxSize,
+} from "../constants/transaction"
 
 // Filter UTXOs by colorId
 const filterUtxosByColorId = (utxos: Utxo[], colorId?: string): Utxo[] => {
@@ -28,10 +33,15 @@ export interface SendOptions {
   feeRate?: number
 }
 
+// Select TPC UTXOs so that their total covers targetAmount plus the fee for
+// the whole transaction. `baseSize` is the byte size of the transaction
+// excluding the inputs selected here (overhead, other inputs, all outputs);
+// the returned fee accounts for baseSize plus the selected inputs.
 const selectUtxos = (
   utxos: Utxo[],
   targetAmount: number,
-  feeRate: number
+  feeRate: number,
+  baseSize: number
 ): { selectedUtxos: Utxo[]; totalInput: number; fee: number } => {
   // Sort UTXOs by value (largest first) for efficient selection
   const sortedUtxos = [...utxos].sort((a, b) => b.value - a.value)
@@ -39,18 +49,11 @@ const selectUtxos = (
   const selectedUtxos: Utxo[] = []
   let totalInput = 0
 
-  // Estimate transaction size: ~10 bytes base + 148 bytes per input + 34 bytes per output
-  // We assume 2 outputs (recipient + change)
-  const estimateFee = (inputCount: number): number => {
-    const estimatedSize = 10 + inputCount * 148 + 2 * 34
-    return estimatedSize * feeRate
-  }
-
   for (const utxo of sortedUtxos) {
     selectedUtxos.push(utxo)
     totalInput += utxo.value
 
-    const fee = estimateFee(selectedUtxos.length)
+    const fee = (baseSize + selectedUtxos.length * P2PKH_INPUT_SIZE) * feeRate
     if (totalInput >= targetAmount + fee) {
       return { selectedUtxos, totalInput, fee }
     }
@@ -68,6 +71,9 @@ export const createAndSignTransaction = async (
   if (!isValidAmount(amount)) {
     throw new Error("Invalid amount")
   }
+  if (!isValidFeeRate(feeRate)) {
+    throw new Error("Invalid fee rate")
+  }
   // ...and at least the dust threshold.
   if (amount < DUST_THRESHOLD) {
     throw new Error(`Amount must be at least ${DUST_THRESHOLD} tapyrus`)
@@ -84,8 +90,13 @@ export const createAndSignTransaction = async (
     throw new Error("No TPC UTXOs available")
   }
 
-  // Select UTXOs
-  const { selectedUtxos, totalInput, fee } = selectUtxos(utxos, amount, feeRate)
+  // Select UTXOs; the transaction has 2 p2pkh outputs (recipient + change)
+  const { selectedUtxos, totalInput, fee } = selectUtxos(
+    utxos,
+    amount,
+    feeRate,
+    estimateTxSize(0, 2)
+  )
 
   // Get keys from mnemonic
   const { keyPair, network } = await getKeyPairFromMnemonic(mnemonic)
@@ -127,13 +138,20 @@ export const createAndSignTransaction = async (
   return { txid, txHex }
 }
 
+// Estimate the fee for a TPC transfer. When the change ends up below the dust
+// threshold, the actual transaction donates it to the fee, so the fee paid can
+// exceed this estimate by up to DUST_THRESHOLD - 1.
 export const estimateFee = async (
   fromAddress: string,
   amount: number,
   feeRate: number = DEFAULT_FEE_RATE
 ): Promise<number> => {
-  const utxos = await getAddressUtxos(fromAddress)
-  const { fee } = selectUtxos(utxos, amount, feeRate)
+  if (!isValidFeeRate(feeRate)) {
+    throw new Error("Invalid fee rate")
+  }
+  const allUtxos = await getAddressUtxos(fromAddress)
+  const utxos = filterUtxosByColorId(allUtxos)
+  const { fee } = selectUtxos(utxos, amount, feeRate, estimateTxSize(0, 2))
   return fee
 }
 
@@ -195,6 +213,9 @@ const createAssetTransactionInternal = async (
   if (!isValidAmount(amount, MAX_COLORED_AMOUNT) || amount <= 0) {
     throw new Error("Amount must be greater than 0")
   }
+  if (!isValidFeeRate(feeRate)) {
+    throw new Error("Invalid fee rate")
+  }
   // Validate the recipient address for transfers (burn has no recipient).
   if (!isBurn && !validateAddress(toAddress)) {
     throw new Error("Invalid recipient address")
@@ -219,20 +240,22 @@ const createAssetTransactionInternal = async (
   const { selectedUtxos: selectedAssetUtxos, totalInput: totalAssetInput } =
     selectAssetUtxos(assetUtxos, amount)
 
-  // Estimate fee based on number of inputs and outputs
-  const estimatedAssetInputs = selectedAssetUtxos.length
-  const hasAssetChange = totalAssetInput > amount
-  // Transfer: recipient + asset change + TPC change = 3
-  // Burn: asset change (if any) + TPC change = 1 or 2
-  const estimatedOutputs = isBurn
-    ? (hasAssetChange ? 1 : 0) + 1
-    : 3
-  const estimatedSize = 10 + (estimatedAssetInputs + 1) * 148 + estimatedOutputs * 34
-  const estimatedFee = estimatedSize * feeRate
+  const assetChange = totalAssetInput - amount
+
+  // Colored outputs: recipient (transfer only) + asset change (if any)
+  const coloredOutputs = (isBurn ? 0 : 1) + (assetChange > 0 ? 1 : 0)
+
+  // Size of the transaction excluding the TPC inputs selected below:
+  // asset inputs + colored outputs + 1 p2pkh output for TPC change.
+  const baseSize = estimateTxSize(selectedAssetUtxos.length, 1, coloredOutputs)
+
+  // A burn with no asset change has no colored output, so the TPC change
+  // output is the only output and must clear the dust threshold.
+  const tpcTarget = coloredOutputs === 0 ? DUST_THRESHOLD : 0
 
   // Select TPC UTXOs for fee
   const { selectedUtxos: selectedTpcUtxos, totalInput: totalTpcInput, fee } =
-    selectUtxos(tpcUtxos, estimatedFee, feeRate)
+    selectUtxos(tpcUtxos, tpcTarget, feeRate, baseSize)
 
   // Get keys from mnemonic
   const { keyPair, network } = await getKeyPairFromMnemonic(mnemonic)
@@ -274,7 +297,6 @@ const createAssetTransactionInternal = async (
   }
 
   // Add asset change output if needed
-  const assetChange = totalAssetInput - amount
   if (assetChange > 0) {
     const changeScript = tapyrus.payments.cp2pkh({
       colorId: colorIdBuffer,

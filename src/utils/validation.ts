@@ -9,6 +9,17 @@ export const MAX_AMOUNT = 2_100_000_000_000_000 // 21 million TPC in tapyrus uni
 // Maximum amount for colored coins (arbitrary but reasonable limit)
 export const MAX_COLORED_AMOUNT = Number.MAX_SAFE_INTEGER
 
+// Nodes relay transactions only at 1 tapyrus/byte or more, so a lower rate
+// would produce transactions that are rejected on broadcast.
+export const MIN_FEE_RATE = 1
+
+/**
+ * Validate that a fee rate (tapyrus per byte) produces relayable transactions
+ */
+export const isValidFeeRate = (feeRate: number): boolean => {
+  return Number.isFinite(feeRate) && feeRate >= MIN_FEE_RATE
+}
+
 /**
  * Validate that a value is a safe positive integer within range
  */

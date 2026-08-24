@@ -2,6 +2,11 @@
 // included, is rejected.
 const ALLOWED_URL_SCHEMES = ["https:", "http:", "ipfs:"]
 
+// Schemes that address a host and therefore need "//" after the colon.
+// "https:example.com" names no host: a browser resolves it against the page it
+// is rendered on, so the link points back at the wallet itself.
+const SCHEMES_REQUIRING_AUTHORITY = ["https:", "http:"]
+
 const SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:/i
 
 // "example.com:8080/a" and "intranet:8443/logo.png" carry a port, not a
@@ -45,7 +50,16 @@ export const sanitizeUrl = (url: string | undefined): string | undefined => {
   // If no scheme, assume https
   if (!scheme) return `https://${trimmed}`
 
-  return ALLOWED_URL_SCHEMES.includes(scheme) ? trimmed : undefined
+  if (!ALLOWED_URL_SCHEMES.includes(scheme)) return undefined
+
+  if (
+    SCHEMES_REQUIRING_AUTHORITY.includes(scheme) &&
+    !trimmed.slice(scheme.length).startsWith("//")
+  ) {
+    return undefined
+  }
+
+  return trimmed
 }
 
 // Raster image media types accepted in a data: URL. image/svg+xml is excluded:
@@ -61,6 +75,8 @@ const ALLOWED_IMAGE_DATA_MEDIA_TYPES = [
   "image/webp",
 ]
 
+const DATA_MEDIA_TYPE_PATTERN = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)[;,]/i
+
 /**
  * Sanitize image URL - allows https: URLs and data: URLs holding a raster image
  */
@@ -68,22 +84,22 @@ export const sanitizeImageUrl = (url: string | undefined): string | undefined =>
   if (!url) return undefined
 
   const trimmed = url.trim()
-  const lowered = trimmed.toLowerCase()
+  if (!trimmed) return undefined
 
-  if (lowered.startsWith("data:")) {
-    const mediaType = lowered.match(/^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)[;,]/)?.[1]
-    if (mediaType && ALLOWED_IMAGE_DATA_MEDIA_TYPES.includes(mediaType)) {
-      return trimmed
-    }
-    return undefined
+  const scheme = schemeOf(trimmed)
+
+  if (scheme === "data:") {
+    const mediaType = trimmed.match(DATA_MEDIA_TYPE_PATTERN)?.[1].toLowerCase()
+    return mediaType && ALLOWED_IMAGE_DATA_MEDIA_TYPES.includes(mediaType)
+      ? trimmed
+      : undefined
   }
 
   // http: can be swapped for another image in transit and ipfs: is not a scheme
   // the platform can fetch on its own, so images are limited to https:.
-  const sanitized = sanitizeUrl(trimmed)
-  if (!sanitized || !sanitized.toLowerCase().startsWith("https://")) {
-    return undefined
-  }
+  if (scheme && scheme !== "https:") return undefined
 
-  return sanitized
+  // No scheme leaves sanitizeUrl to prefix https://; https: leaves it to check
+  // that an authority follows.
+  return sanitizeUrl(trimmed)
 }

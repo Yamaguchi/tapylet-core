@@ -1,4 +1,7 @@
-import { issueToken, splitAmount, estimateTxSize, type TokenType, type MetadataFields } from '~/core/wallet/issuance'
+import { issueToken, splitAmount, type TokenType, type MetadataFields } from '~/core/wallet/issuance'
+import { estimateTxSize } from '~/core/constants/transaction'
+import { MAX_FEE_RATE } from '~/core/utils/validation'
+import * as tapyrus from 'tapyrusjs-lib'
 import * as esplora from '~/core/api/esplora'
 import * as hdwallet from '~/core/wallet/hdwallet'
 import { TEST_MNEMONIC, TEST_ADDRESS, mockPublicKey, mockKeyPairWithNetwork } from '../../helpers/mockWallet'
@@ -460,6 +463,76 @@ describe('issuance', () => {
 
       // paymentBase should be the original public key hex
       expect(result.paymentBase).toBe(mockPublicKey.toString('hex'))
+    })
+  })
+
+  describe('issueToken - fee rate validation', () => {
+    it('should throw error if fee rate is below the relayable minimum', async () => {
+      await expect(issueToken({
+        tokenType: 'reissuable',
+        amount: 1000000,
+        metadata: { ...baseMetadata, tokenType: 'reissuable' },
+        mnemonic: testMnemonic,
+        fromAddress: testAddress,
+        feeRate: 0.5,
+      })).rejects.toThrow('Invalid fee rate')
+    })
+
+    it('should throw error if fee rate is above the absurd-fee limit', async () => {
+      await expect(issueToken({
+        tokenType: 'reissuable',
+        amount: 1000000,
+        metadata: { ...baseMetadata, tokenType: 'reissuable' },
+        mnemonic: testMnemonic,
+        fromAddress: testAddress,
+        feeRate: MAX_FEE_RATE + 1,
+      })).rejects.toThrow('Invalid fee rate')
+    })
+  })
+
+  describe('issueToken - fee payment', () => {
+    it('pays fees covering the actual size of both transactions when the funding tx needs multiple inputs', async () => {
+      const smallUtxos: esplora.Utxo[] = [1, 2, 3, 4, 5, 6].map(i => ({
+        txid: String(i).repeat(64),
+        vout: 0,
+        status: { confirmed: true },
+        value: 2000,
+        colorId: esplora.TPC_COLOR_ID,
+      }))
+      mockedEsplora.getAddressUtxos.mockResolvedValue(smallUtxos)
+
+      const broadcastCalls: string[] = []
+      mockedEsplora.broadcastTransaction.mockImplementation(async (txHex) => {
+        broadcastCalls.push(txHex)
+        return broadcastCalls.length.toString(16).padStart(64, '0')
+      })
+
+      await issueToken({
+        tokenType: 'reissuable',
+        amount: 1000,
+        metadata: { ...baseMetadata, tokenType: 'reissuable' },
+        mnemonic: testMnemonic,
+        fromAddress: testAddress,
+      })
+
+      const [tx1Hex, tx2Hex] = broadcastCalls
+      const tx1 = tapyrus.Transaction.fromHex(tx1Hex)
+      const tx2 = tapyrus.Transaction.fromHex(tx2Hex)
+
+      // tx1: all inputs and outputs are TPC
+      expect(tx1.ins.length).toBeGreaterThan(1)
+      const tx1InputTotal = tx1.ins.length * 2000
+      const tx1OutputTotal = tx1.outs.reduce((sum, out) => sum + out.value, 0)
+      const tx1Fee = tx1InputTotal - tx1OutputTotal
+      expect(tx1Fee).toBeGreaterThanOrEqual((tx1Hex.length / 2) * 3)
+
+      // tx2 spends all tx1 outputs; only p2pkh outputs carry TPC
+      expect(tx2.ins.length).toBe(tx1.outs.length)
+      const tx2OutputTpc = tx2.outs
+        .filter(out => out.script.length === 25)
+        .reduce((sum, out) => sum + out.value, 0)
+      const tx2Fee = tx1OutputTotal - tx2OutputTpc
+      expect(tx2Fee).toBeGreaterThanOrEqual((tx2Hex.length / 2) * 3)
     })
   })
 })

@@ -1,4 +1,6 @@
-import { createAndSignTransaction, createAndSignAssetTransaction, burnAsset } from '~/core/wallet/transaction'
+import { createAndSignTransaction, createAndSignAssetTransaction, burnAsset, estimateFee } from '~/core/wallet/transaction'
+import { estimateTxSize, DEFAULT_FEE_RATE, DUST_THRESHOLD, P2PKH_INPUT_SIZE } from '~/core/constants/transaction'
+import { MAX_FEE_RATE } from '~/core/utils/validation'
 import * as tapyrus from 'tapyrusjs-lib'
 import * as esplora from '~/core/api/esplora'
 import * as hdwallet from '~/core/wallet/hdwallet'
@@ -92,6 +94,51 @@ describe('transaction', () => {
         amount: 10000000,
         mnemonic: testMnemonic,
       })).rejects.toThrow('Invalid recipient address')
+    })
+
+    it('should throw error if fee rate is below the relayable minimum', async () => {
+      await expect(createAndSignTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 10000000,
+        mnemonic: testMnemonic,
+        feeRate: 0,
+      })).rejects.toThrow('Invalid fee rate')
+    })
+
+    it('should throw error if fee rate is above the absurd-fee limit', async () => {
+      await expect(createAndSignTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 10000000,
+        mnemonic: testMnemonic,
+        feeRate: MAX_FEE_RATE + 1,
+      })).rejects.toThrow('Invalid fee rate')
+    })
+
+    it('should accept a fee rate at the absurd-fee limit', async () => {
+      const utxos: esplora.Utxo[] = [{
+        txid: 'a'.repeat(64),
+        vout: 0,
+        status: { confirmed: true },
+        value: 1000000000,
+        colorId: esplora.TPC_COLOR_ID,
+      }]
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      const result = await createAndSignTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 10000,
+        mnemonic: testMnemonic,
+        feeRate: MAX_FEE_RATE,
+      })
+
+      // tapyrusjs-lib refuses to build above 2500 tapyrus/byte, so the limit
+      // has to stay below that for a transaction at the limit to be buildable
+      const tx = tapyrus.Transaction.fromHex(result.txHex)
+      const outTotal = tx.outs.reduce((sum, out) => sum + out.value, 0)
+      expect(utxos[0].value - outTotal).toBe(estimateTxSize(1, 2) * MAX_FEE_RATE)
     })
 
     it('should throw error if no TPC UTXOs available', async () => {
@@ -189,6 +236,28 @@ describe('transaction', () => {
         colorId: testColorId,
         mnemonic: testMnemonic,
       })).rejects.toThrow('Insufficient asset balance')
+    })
+
+    it('should throw error if fee rate is below the relayable minimum', async () => {
+      await expect(createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 500,
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+        feeRate: -1,
+      })).rejects.toThrow('Invalid fee rate')
+    })
+
+    it('should throw error if fee rate is above the absurd-fee limit', async () => {
+      await expect(createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 500,
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+        feeRate: MAX_FEE_RATE + 1,
+      })).rejects.toThrow('Invalid fee rate')
     })
 
     it('should include recipient colored output in transaction', async () => {
@@ -402,6 +471,206 @@ describe('transaction', () => {
 
       // Burn has 1 colored output (change only)
       expect(countColoredOutputs(burnTx)).toBe(1)
+    })
+  })
+
+  describe('fee payment', () => {
+    // TPC input total minus p2pkh output total. Colored outputs carry token
+    // amounts, not TPC, so they are excluded on both sides.
+    const paidTpcFee = (txHex: string, utxos: esplora.Utxo[]): number => {
+      const tx = tapyrus.Transaction.fromHex(txHex)
+      const byOutpoint = new Map(utxos.map(u => [`${u.txid}:${u.vout}`, u]))
+      let inputTpc = 0
+      for (const input of tx.ins) {
+        const txid = Buffer.from(input.hash).reverse().toString('hex')
+        const utxo = byOutpoint.get(`${txid}:${input.index}`)
+        if (utxo && (!utxo.colorId || utxo.colorId === esplora.TPC_COLOR_ID)) {
+          inputTpc += utxo.value
+        }
+      }
+      const outputTpc = tx.outs
+        .filter(out => out.script.length === 25)
+        .reduce((sum, out) => sum + out.value, 0)
+      return inputTpc - outputTpc
+    }
+
+    const txByteSize = (txHex: string): number => txHex.length / 2
+
+    beforeEach(() => {
+      mockedEsplora.isTpcColorId.mockImplementation((colorId) => {
+        return !colorId || colorId === esplora.TPC_COLOR_ID
+      })
+    })
+
+    it('pays a fee covering the actual size of a TPC transaction with many inputs', async () => {
+      const utxos: esplora.Utxo[] = [1, 2, 3, 4, 5].map(i => ({
+        txid: String(i).repeat(64),
+        vout: 0,
+        status: { confirmed: true },
+        value: 3000,
+        colorId: esplora.TPC_COLOR_ID,
+      }))
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      const result = await createAndSignTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 10000,
+        mnemonic: testMnemonic,
+      })
+
+      const fee = paidTpcFee(result.txHex, utxos)
+      const expectedFee = (estimateTxSize(0, 2) + 5 * P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
+      expect(fee).toBe(expectedFee)
+      expect(fee).toBeGreaterThanOrEqual(txByteSize(result.txHex) * DEFAULT_FEE_RATE)
+    })
+
+    it('pays a fee covering asset inputs and colored outputs on a transfer', async () => {
+      const assetUtxos: esplora.Utxo[] = ['d', 'e', 'f'].map(c => ({
+        txid: c.repeat(64),
+        vout: 0,
+        status: { confirmed: true },
+        value: 400,
+        colorId: testColorId,
+      }))
+      const utxos = [...mockTpcUtxos, ...assetUtxos]
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      const result = await createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 1000, // needs all 3 asset UTXOs, 200 asset change
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+      })
+
+      const tx = tapyrus.Transaction.fromHex(result.txHex)
+      expect(tx.ins.length).toBe(4) // 3 asset inputs + 1 TPC input
+
+      const fee = paidTpcFee(result.txHex, utxos)
+      // 3 asset inputs + 1 TPC input, 2 colored outputs, 1 TPC change output
+      const expectedFee = (estimateTxSize(3, 1, 2) + P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
+      expect(fee).toBe(expectedFee)
+      expect(fee).toBeGreaterThanOrEqual(txByteSize(result.txHex) * DEFAULT_FEE_RATE)
+    })
+
+    it('rounds the fee up to an integer for non-integer fee rates', async () => {
+      const utxos = [...mockTpcUtxos, ...mockColoredUtxos]
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      // Full transfer (no asset change): odd base size of 261 bytes
+      // (1 asset input, 1 colored output, 1 TPC change output)
+      const result = await createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 1000,
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+        feeRate: 1.5,
+      })
+
+      const fee = paidTpcFee(result.txHex, utxos)
+      expect(Number.isInteger(fee)).toBe(true)
+      const expectedFee = Math.ceil((estimateTxSize(1, 1, 1) + P2PKH_INPUT_SIZE) * 1.5)
+      expect(fee).toBe(expectedFee)
+    })
+
+    it('creates a TPC change output above dust when burning all tokens', async () => {
+      const tpcUtxos: esplora.Utxo[] = [{
+        txid: 'a'.repeat(64),
+        vout: 0,
+        status: { confirmed: true },
+        value: 5000,
+        colorId: esplora.TPC_COLOR_ID,
+      }]
+      const utxos = [...tpcUtxos, ...mockColoredUtxos]
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      const result = await burnAsset({
+        fromAddress: testAddress,
+        amount: 1000, // burn all: no colored output remains
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+      })
+
+      const tx = tapyrus.Transaction.fromHex(result.txHex)
+      // The TPC change output is the only output and must clear dust
+      expect(tx.outs.length).toBe(1)
+      expect(tx.outs[0].script.length).toBe(25)
+      expect(tx.outs[0].value).toBeGreaterThanOrEqual(DUST_THRESHOLD)
+
+      const fee = paidTpcFee(result.txHex, utxos)
+      const expectedFee = (estimateTxSize(1, 1, 0) + P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
+      expect(fee).toBe(expectedFee)
+      expect(fee).toBeGreaterThanOrEqual(txByteSize(result.txHex) * DEFAULT_FEE_RATE)
+    })
+  })
+
+  describe('estimateFee', () => {
+    beforeEach(() => {
+      mockedEsplora.isTpcColorId.mockImplementation((colorId) => {
+        return !colorId || colorId === esplora.TPC_COLOR_ID
+      })
+    })
+
+    it('rejects the same arguments the transfer rejects', async () => {
+      // NaN would otherwise walk the whole UTXO set and report "Insufficient
+      // funds" for an address that has plenty
+      await expect(estimateFee(testAddress, NaN)).rejects.toThrow('Invalid amount')
+      await expect(estimateFee(testAddress, 1.5)).rejects.toThrow('Invalid amount')
+      await expect(estimateFee(testAddress, -1)).rejects.toThrow('Invalid amount')
+      await expect(estimateFee(testAddress, 0))
+        .rejects.toThrow(`Amount must be at least ${DUST_THRESHOLD} tapyrus`)
+      await expect(estimateFee(testAddress, DUST_THRESHOLD - 1))
+        .rejects.toThrow(`Amount must be at least ${DUST_THRESHOLD} tapyrus`)
+    })
+
+    it('estimates from TPC UTXOs only, ignoring colored UTXOs', async () => {
+      const utxos: esplora.Utxo[] = [
+        {
+          txid: 'b'.repeat(64),
+          vout: 0,
+          status: { confirmed: true },
+          value: 20000000, // token amount, not TPC
+          colorId: testColorId,
+        },
+        ...['d', 'e'].map(c => ({
+          txid: c.repeat(64),
+          vout: 0,
+          status: { confirmed: true },
+          value: 6000000,
+          colorId: esplora.TPC_COLOR_ID,
+        })),
+      ]
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      const fee = await estimateFee(testAddress, 10000000)
+
+      // Both TPC UTXOs are needed; the colored UTXO must not be counted
+      const expectedFee = (estimateTxSize(0, 2) + 2 * P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
+      expect(fee).toBe(expectedFee)
+    })
+
+    it('throws when TPC balance is insufficient even if colored UTXOs exist', async () => {
+      const utxos: esplora.Utxo[] = [
+        {
+          txid: 'b'.repeat(64),
+          vout: 0,
+          status: { confirmed: true },
+          value: 999999999, // token amount, not TPC
+          colorId: testColorId,
+        },
+        {
+          txid: 'a'.repeat(64),
+          vout: 0,
+          status: { confirmed: true },
+          value: 500,
+          colorId: esplora.TPC_COLOR_ID,
+        },
+      ]
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      await expect(estimateFee(testAddress, 10000000)).rejects.toThrow('Insufficient funds')
     })
   })
 })

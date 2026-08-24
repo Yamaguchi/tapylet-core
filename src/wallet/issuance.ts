@@ -10,7 +10,10 @@ import {
   estimateTxSize,
   feeForSize,
 } from "../constants/transaction"
+import { splitAmount, validateSplitRange } from "../utils/split"
 import { selectTpcUtxos } from "./coinSelection"
+
+export { MAX_SPLIT, splitAmount } from "../utils/split"
 
 export type TokenType = "reissuable" | "non_reissuable" | "nft"
 
@@ -47,24 +50,9 @@ export interface IssueOptions {
   fromAddress: string
   feeRate?: number
   // Number of colored outputs to split the issued amount across (1-100).
-  // The total amount is divided evenly; any remainder goes to the last output.
+  // Every output gets floor(amount / split); the whole remainder goes to the
+  // last output.
   split?: number
-}
-
-// Maximum number of colored outputs an issuance can be split into.
-// Mirrors the Tapyrus API `split` upper bound.
-export const MAX_SPLIT = 100
-
-// Distribute `amount` across `split` outputs as evenly as possible.
-// The remainder is added to the last output,
-// and when amount < split only `amount` outputs of 1 are created.
-export const splitAmount = (amount: number, split: number): number[] => {
-  const count = Math.min(split, amount)
-  const base = Math.floor(amount / count)
-  const outputs = new Array(count - 1).fill(base)
-  const last = amount - base * (count - 1)
-  outputs.push(last)
-  return outputs
 }
 
 export interface IssueResult {
@@ -96,9 +84,7 @@ export const issueToken = async (options: IssueOptions): Promise<IssueResult> =>
   // NFTs are indivisible; any other token may be split across outputs.
   const effectiveSplit = tokenType === "nft" ? 1 : split
 
-  if (!Number.isInteger(effectiveSplit) || effectiveSplit < 1 || effectiveSplit > MAX_SPLIT) {
-    throw new Error(`split must be an integer between 1 and ${MAX_SPLIT}`)
-  }
+  validateSplitRange(effectiveSplit)
 
   // Get keys from mnemonic
   const { keyPair, publicKey, network } = await getKeyPairFromMnemonic(mnemonic)

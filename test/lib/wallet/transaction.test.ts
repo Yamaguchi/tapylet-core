@@ -1,4 +1,4 @@
-import { createAndSignTransaction, createAndSignAssetTransaction, burnAsset, estimateFee } from '~/core/wallet/transaction'
+import { createAndSignTransaction, createAndSignAssetTransaction, burnAsset, estimateFee, MAX_SPLIT } from '~/core/wallet/transaction'
 import { estimateTxSize, DEFAULT_FEE_RATE, DUST_THRESHOLD, P2PKH_INPUT_SIZE } from '~/core/constants/transaction'
 import { MAX_FEE_RATE } from '~/core/utils/validation'
 import * as tapyrus from 'tapyrusjs-lib'
@@ -46,6 +46,27 @@ describe('transaction', () => {
     mockedHdwallet.getKeyPairFromMnemonic.mockResolvedValue(mockKeyPairWithNetwork)
     mockedEsplora.broadcastTransaction.mockResolvedValue('c'.repeat(64))
   })
+
+  // TPC input total minus p2pkh output total. Colored outputs carry token
+  // amounts, not TPC, so they are excluded on both sides.
+  const paidTpcFee = (txHex: string, utxos: esplora.Utxo[]): number => {
+    const tx = tapyrus.Transaction.fromHex(txHex)
+    const byOutpoint = new Map(utxos.map(u => [`${u.txid}:${u.vout}`, u]))
+    let inputTpc = 0
+    for (const input of tx.ins) {
+      const txid = Buffer.from(input.hash).reverse().toString('hex')
+      const utxo = byOutpoint.get(`${txid}:${input.index}`)
+      if (utxo && (!utxo.colorId || utxo.colorId === esplora.TPC_COLOR_ID)) {
+        inputTpc += utxo.value
+      }
+    }
+    const outputTpc = tx.outs
+      .filter(out => out.script.length === 25)
+      .reduce((sum, out) => sum + out.value, 0)
+    return inputTpc - outputTpc
+  }
+
+  const txByteSize = (txHex: string): number => txHex.length / 2
 
   describe('createAndSignTransaction', () => {
     beforeEach(() => {
@@ -475,27 +496,6 @@ describe('transaction', () => {
   })
 
   describe('fee payment', () => {
-    // TPC input total minus p2pkh output total. Colored outputs carry token
-    // amounts, not TPC, so they are excluded on both sides.
-    const paidTpcFee = (txHex: string, utxos: esplora.Utxo[]): number => {
-      const tx = tapyrus.Transaction.fromHex(txHex)
-      const byOutpoint = new Map(utxos.map(u => [`${u.txid}:${u.vout}`, u]))
-      let inputTpc = 0
-      for (const input of tx.ins) {
-        const txid = Buffer.from(input.hash).reverse().toString('hex')
-        const utxo = byOutpoint.get(`${txid}:${input.index}`)
-        if (utxo && (!utxo.colorId || utxo.colorId === esplora.TPC_COLOR_ID)) {
-          inputTpc += utxo.value
-        }
-      }
-      const outputTpc = tx.outs
-        .filter(out => out.script.length === 25)
-        .reduce((sum, out) => sum + out.value, 0)
-      return inputTpc - outputTpc
-    }
-
-    const txByteSize = (txHex: string): number => txHex.length / 2
-
     beforeEach(() => {
       mockedEsplora.isTpcColorId.mockImplementation((colorId) => {
         return !colorId || colorId === esplora.TPC_COLOR_ID
@@ -671,6 +671,246 @@ describe('transaction', () => {
       mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
 
       await expect(estimateFee(testAddress, 10000000)).rejects.toThrow('Insufficient funds')
+    })
+  })
+
+  describe('split', () => {
+    beforeEach(() => {
+      mockedEsplora.isTpcColorId.mockImplementation((colorId) => {
+        return !colorId || colorId === esplora.TPC_COLOR_ID
+      })
+    })
+
+    // Values of the outputs paying `address`, in transaction order.
+    const outputValuesTo = (txHex: string, address: string): number[] => {
+      const tx = tapyrus.Transaction.fromHex(txHex)
+      const script = tapyrus.address.toOutputScript(address, mockKeyPairWithNetwork.network)
+      return tx.outs.filter(out => out.script.equals(script)).map(out => out.value)
+    }
+
+    // Values of the colored outputs paying `address` with `colorId`.
+    const coloredOutputValuesTo = (txHex: string, address: string, colorId: string): number[] => {
+      const tx = tapyrus.Transaction.fromHex(txHex)
+      const script = tapyrus.payments.cp2pkh({
+        colorId: Buffer.from(colorId, 'hex'),
+        hash: tapyrus.address.fromBase58Check(address).hash,
+        network: mockKeyPairWithNetwork.network,
+      }).output!
+      return tx.outs.filter(out => out.script.equals(script)).map(out => out.value)
+    }
+
+    describe('createAndSignTransaction', () => {
+      beforeEach(() => {
+        mockedEsplora.getAddressUtxos.mockResolvedValue(mockTpcUtxos)
+      })
+
+      it('creates one recipient output per split', async () => {
+        const result = await createAndSignTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 10000000,
+          mnemonic: testMnemonic,
+          split: 4,
+        })
+
+        expect(outputValuesTo(result.txHex, testRecipient)).toEqual([
+          2500000, 2500000, 2500000, 2500000,
+        ])
+      })
+
+      it('adds the remainder to the last output', async () => {
+        const result = await createAndSignTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 10000003,
+          mnemonic: testMnemonic,
+          split: 3,
+        })
+
+        const values = outputValuesTo(result.txHex, testRecipient)
+        expect(values).toEqual([3333334, 3333334, 3333335])
+        expect(values.reduce((sum, v) => sum + v, 0)).toBe(10000003)
+      })
+
+      it('creates a single recipient output by default', async () => {
+        const result = await createAndSignTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 10000000,
+          mnemonic: testMnemonic,
+        })
+
+        expect(outputValuesTo(result.txHex, testRecipient)).toEqual([10000000])
+      })
+
+      it('pays a fee covering every split output', async () => {
+        const result = await createAndSignTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 10000000,
+          mnemonic: testMnemonic,
+          split: 10,
+        })
+
+        const fee = paidTpcFee(result.txHex, mockTpcUtxos)
+        // 10 recipient outputs + 1 change output, funded by 1 TPC input
+        const expectedFee = (estimateTxSize(0, 11) + P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
+        expect(fee).toBe(expectedFee)
+        expect(fee).toBeGreaterThanOrEqual(txByteSize(result.txHex) * DEFAULT_FEE_RATE)
+      })
+
+      it('throws when split is out of range', async () => {
+        for (const split of [0, 101, 1.5]) {
+          await expect(createAndSignTransaction({
+            fromAddress: testAddress,
+            toAddress: testRecipient,
+            amount: 10000000,
+            mnemonic: testMnemonic,
+            split,
+          })).rejects.toThrow('split must be an integer between 1 and 100')
+        }
+      })
+
+      it('allows a split whose outputs land exactly on the dust threshold', async () => {
+        const result = await createAndSignTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: DUST_THRESHOLD * 4,
+          mnemonic: testMnemonic,
+          split: 4,
+        })
+
+        expect(outputValuesTo(result.txHex, testRecipient)).toEqual([
+          DUST_THRESHOLD, DUST_THRESHOLD, DUST_THRESHOLD, DUST_THRESHOLD,
+        ])
+      })
+
+      it('pays a fee covering the largest allowed split', async () => {
+        const result = await createAndSignTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 10000000,
+          mnemonic: testMnemonic,
+          split: MAX_SPLIT,
+        })
+
+        expect(outputValuesTo(result.txHex, testRecipient)).toHaveLength(MAX_SPLIT)
+        const fee = paidTpcFee(result.txHex, mockTpcUtxos)
+        const expectedFee = (estimateTxSize(0, MAX_SPLIT + 1) + P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
+        expect(fee).toBe(expectedFee)
+        expect(fee).toBeGreaterThanOrEqual(txByteSize(result.txHex) * DEFAULT_FEE_RATE)
+      })
+
+      it('throws when a split output would fall below the dust threshold', async () => {
+        await expect(createAndSignTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: DUST_THRESHOLD * 4 - 1,
+          mnemonic: testMnemonic,
+          split: 4,
+        })).rejects.toThrow(`Each of the 4 outputs must be at least ${DUST_THRESHOLD} tapyrus`)
+      })
+    })
+
+    describe('createAndSignAssetTransaction', () => {
+      beforeEach(() => {
+        mockedEsplora.getAddressUtxos.mockResolvedValue([...mockTpcUtxos, ...mockColoredUtxos])
+      })
+
+      it('creates one colored recipient output per split', async () => {
+        const result = await createAndSignAssetTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 400,
+          colorId: testColorId,
+          mnemonic: testMnemonic,
+          split: 4,
+        })
+
+        expect(coloredOutputValuesTo(result.txHex, testRecipient, testColorId)).toEqual([
+          100, 100, 100, 100,
+        ])
+        // The 600 left over still goes back as a single asset change output
+        expect(coloredOutputValuesTo(result.txHex, testAddress, testColorId)).toEqual([600])
+      })
+
+      it('creates a single colored recipient output by default', async () => {
+        const result = await createAndSignAssetTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 400,
+          colorId: testColorId,
+          mnemonic: testMnemonic,
+        })
+
+        expect(coloredOutputValuesTo(result.txHex, testRecipient, testColorId)).toEqual([400])
+      })
+
+      it('creates only `amount` outputs when the split exceeds the amount', async () => {
+        const result = await createAndSignAssetTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 3,
+          colorId: testColorId,
+          mnemonic: testMnemonic,
+          split: 10,
+        })
+
+        expect(coloredOutputValuesTo(result.txHex, testRecipient, testColorId)).toEqual([1, 1, 1])
+      })
+
+      it('pays a fee covering every colored split output', async () => {
+        const result = await createAndSignAssetTransaction({
+          fromAddress: testAddress,
+          toAddress: testRecipient,
+          amount: 400,
+          colorId: testColorId,
+          mnemonic: testMnemonic,
+          split: 4,
+        })
+
+        const fee = paidTpcFee(result.txHex, [...mockTpcUtxos, ...mockColoredUtxos])
+        // 1 asset input + 1 TPC input, 5 colored outputs, 1 TPC change output
+        const expectedFee = (estimateTxSize(1, 1, 5) + P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
+        expect(fee).toBe(expectedFee)
+        expect(fee).toBeGreaterThanOrEqual(txByteSize(result.txHex) * DEFAULT_FEE_RATE)
+      })
+
+      it('throws when split is out of range', async () => {
+        for (const split of [0, 101, 1.5]) {
+          await expect(createAndSignAssetTransaction({
+            fromAddress: testAddress,
+            toAddress: testRecipient,
+            amount: 400,
+            colorId: testColorId,
+            mnemonic: testMnemonic,
+            split,
+          })).rejects.toThrow('split must be an integer between 1 and 100')
+        }
+      })
+    })
+
+    describe('estimateFee', () => {
+      beforeEach(() => {
+        mockedEsplora.getAddressUtxos.mockResolvedValue(mockTpcUtxos)
+      })
+
+      it('counts one recipient output per split', async () => {
+        const fee = await estimateFee(testAddress, 10000000, { split: 10 })
+
+        const expectedFee = (estimateTxSize(0, 11) + P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
+        expect(fee).toBe(expectedFee)
+      })
+
+      it('throws when split is out of range', async () => {
+        await expect(estimateFee(testAddress, 10000000, { split: 101 }))
+          .rejects.toThrow('split must be an integer between 1 and 100')
+      })
+
+      it('rejects a split that puts an output below the dust threshold', async () => {
+        await expect(estimateFee(testAddress, DUST_THRESHOLD * 4 - 1, { split: 4 }))
+          .rejects.toThrow(`Each of the 4 outputs must be at least ${DUST_THRESHOLD} tapyrus`)
+      })
     })
   })
 })

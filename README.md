@@ -104,6 +104,15 @@ const { txid, txHex } = await createAndSignTransaction({
 })
 ```
 
+`split` (1-100) pays the recipient through that many outputs instead of one, so
+the recipient can spend in parallel instead of chaining unconfirmed
+transactions. Every output gets `floor(amount / split)` and the whole remainder
+goes to the last output, so that output can exceed the others by up to
+`split - 1`: an amount of 199 split 100 ways yields 99 outputs of 1 and one
+output of 100. For TPC every output must clear the dust threshold.
+`createAndSignAssetTransaction` accepts the same option for Colored Coins, where
+an amount smaller than `split` yields `amount` outputs of 1 instead.
+
 ### Token issuance
 
 ```ts

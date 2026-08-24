@@ -8,7 +8,10 @@ import {
   DEFAULT_FEE_RATE,
   estimateTxSize,
 } from "../constants/transaction"
+import { splitAmount, validateSplitRange } from "../utils/split"
 import { selectTpcUtxos } from "./coinSelection"
+
+export { MAX_SPLIT, splitAmount } from "../utils/split"
 
 // Filter UTXOs by colorId
 const filterUtxosByColorId = (utxos: Utxo[], colorId?: string): Utxo[] => {
@@ -31,24 +34,57 @@ export interface SendOptions {
   amount: number // in tapyrus
   mnemonic: string
   feeRate?: number
+  // Number of outputs to split the payment across (1-100). Every output gets
+  // floor(amount / split); the whole remainder goes to the last output. Every
+  // output must clear the dust threshold.
+  split?: number
 }
 
-export const createAndSignTransaction = async (
-  options: SendOptions
-): Promise<SendResult> => {
-  const { fromAddress, toAddress, amount, mnemonic, feeRate = DEFAULT_FEE_RATE } = options
+// A TPC output below the dust threshold is unspendable, so every split output
+// must clear it on its own.
+const validateTpcSplit = (amount: number, split: number): void => {
+  validateSplitRange(split)
+  if (Math.floor(amount / split) < DUST_THRESHOLD) {
+    throw new Error(
+      `Each of the ${split} outputs must be at least ${DUST_THRESHOLD} tapyrus`
+    )
+  }
+}
 
-  // Validate amount: must be a safe positive integer within range...
+// Shared by createAndSignTransaction and estimateFee so an estimate that
+// succeeds is never followed by a transfer that refuses the same arguments.
+const validateTransferArgs = (
+  amount: number,
+  feeRate: number,
+  split: number
+): void => {
+  // Amount must be a safe positive integer within range and at least the dust
+  // threshold.
   if (!isValidAmount(amount)) {
     throw new Error("Invalid amount")
   }
   if (!isValidFeeRate(feeRate)) {
     throw new Error("Invalid fee rate")
   }
-  // ...and at least the dust threshold.
   if (amount < DUST_THRESHOLD) {
     throw new Error(`Amount must be at least ${DUST_THRESHOLD} tapyrus`)
   }
+  validateTpcSplit(amount, split)
+}
+
+export const createAndSignTransaction = async (
+  options: SendOptions
+): Promise<SendResult> => {
+  const {
+    fromAddress,
+    toAddress,
+    amount,
+    mnemonic,
+    feeRate = DEFAULT_FEE_RATE,
+    split = 1,
+  } = options
+
+  validateTransferArgs(amount, feeRate, split)
   // Validate the recipient address before building/signing/broadcasting.
   if (!validateAddress(toAddress)) {
     throw new Error("Invalid recipient address")
@@ -61,11 +97,13 @@ export const createAndSignTransaction = async (
     throw new Error("No TPC UTXOs available")
   }
 
-  // Select UTXOs; the transaction has 2 p2pkh outputs (recipient + change)
+  const recipientOutputs = splitAmount(amount, split)
+
+  // Select UTXOs; the transaction has one p2pkh output per split plus change
   const { selectedUtxos, change } = selectTpcUtxos(utxos, {
     target: amount,
     feeRate,
-    baseSize: estimateTxSize(0, 2),
+    baseSize: estimateTxSize(0, recipientOutputs.length + 1),
   })
 
   // Get keys from mnemonic
@@ -80,8 +118,11 @@ export const createAndSignTransaction = async (
     txb.addInput(utxo.txid, utxo.vout)
   }
 
-  // Add recipient output
-  txb.addOutput(toAddress, amount)
+  // Add recipient outputs (one per split)
+  const recipientScript = tapyrus.address.toOutputScript(toAddress, network)
+  for (const outputAmount of recipientOutputs) {
+    txb.addOutput(recipientScript, outputAmount)
+  }
 
   // Add change output if needed
   if (change > 0) {
@@ -107,30 +148,29 @@ export const createAndSignTransaction = async (
   return { txid, txHex }
 }
 
+export interface EstimateFeeOptions {
+  feeRate?: number
+  // Same meaning as SendOptions.split.
+  split?: number
+}
+
 // Estimate the fee for a TPC transfer, including any change too small to
 // become its own output and therefore donated to the fee.
 export const estimateFee = async (
   fromAddress: string,
   amount: number,
-  feeRate: number = DEFAULT_FEE_RATE
+  options: EstimateFeeOptions = {}
 ): Promise<number> => {
-  // Same validation as createAndSignTransaction, so an estimate that succeeds
-  // is never followed by a transfer that refuses the same arguments.
-  if (!isValidAmount(amount)) {
-    throw new Error("Invalid amount")
-  }
-  if (!isValidFeeRate(feeRate)) {
-    throw new Error("Invalid fee rate")
-  }
-  if (amount < DUST_THRESHOLD) {
-    throw new Error(`Amount must be at least ${DUST_THRESHOLD} tapyrus`)
-  }
+  const { feeRate = DEFAULT_FEE_RATE, split = 1 } = options
+  validateTransferArgs(amount, feeRate, split)
   const allUtxos = await getAddressUtxos(fromAddress)
   const utxos = filterUtxosByColorId(allUtxos)
   const { fee } = selectTpcUtxos(utxos, {
     target: amount,
     feeRate,
-    baseSize: estimateTxSize(0, 2),
+    // Every output clears the dust threshold, so the recipient output count
+    // always equals `split`.
+    baseSize: estimateTxSize(0, split + 1),
   })
   return fee
 }
@@ -142,6 +182,11 @@ export interface AssetSendOptions {
   colorId: string
   mnemonic: string
   feeRate?: number
+  // Number of colored outputs to split the payment across (1-100). Every
+  // output gets floor(amount / split); the whole remainder goes to the last
+  // output, so it can be far larger than the rest. An amount smaller than
+  // `split` yields `amount` outputs of 1 rather than `split` outputs.
+  split?: number
 }
 
 export interface BurnOptions {
@@ -181,13 +226,14 @@ interface AssetTransactionInternalOptions {
   colorId: string
   mnemonic: string
   feeRate: number
+  split: number
 }
 
 // Internal function for both asset transfer and burn
 const createAssetTransactionInternal = async (
   options: AssetTransactionInternalOptions
 ): Promise<SendResult> => {
-  const { fromAddress, toAddress, amount, colorId, mnemonic, feeRate } = options
+  const { fromAddress, toAddress, amount, colorId, mnemonic, feeRate, split } = options
   const isBurn = !toAddress
 
   if (!isValidAmount(amount, MAX_COLORED_AMOUNT) || amount <= 0) {
@@ -200,6 +246,7 @@ const createAssetTransactionInternal = async (
   if (!isBurn && !validateAddress(toAddress)) {
     throw new Error("Invalid recipient address")
   }
+  validateSplitRange(split)
 
   // Get all UTXOs
   const allUtxos = await getAddressUtxos(fromAddress)
@@ -222,8 +269,11 @@ const createAssetTransactionInternal = async (
 
   const assetChange = totalAssetInput - amount
 
-  // Colored outputs: recipient (transfer only) + asset change (if any)
-  const coloredOutputs = (isBurn ? 0 : 1) + (assetChange > 0 ? 1 : 0)
+  // Amount distributed across the recipient outputs (a burn has none).
+  const recipientOutputs = isBurn ? [] : splitAmount(amount, split)
+
+  // Colored outputs: recipient outputs (transfer only) + asset change (if any)
+  const coloredOutputs = recipientOutputs.length + (assetChange > 0 ? 1 : 0)
 
   // Size of the transaction excluding the TPC inputs selected below:
   // asset inputs + colored outputs + 1 p2pkh output for TPC change.
@@ -270,7 +320,7 @@ const createAssetTransactionInternal = async (
     txb.addInput(utxo.txid, utxo.vout)
   }
 
-  // Add asset output to recipient (only for transfer)
+  // Add asset outputs to recipient, one per split (only for transfer)
   if (!isBurn) {
     const toAddressDecoded = tapyrus.address.fromBase58Check(toAddress)
     const recipientScript = tapyrus.payments.cp2pkh({
@@ -278,7 +328,9 @@ const createAssetTransactionInternal = async (
       hash: toAddressDecoded.hash,
       network,
     }).output!
-    txb.addOutput(recipientScript, amount)
+    for (const outputAmount of recipientOutputs) {
+      txb.addOutput(recipientScript, outputAmount)
+    }
   }
 
   // Add asset change output if needed
@@ -319,13 +371,14 @@ const createAssetTransactionInternal = async (
 export const createAndSignAssetTransaction = async (
   options: AssetSendOptions
 ): Promise<SendResult> => {
-  const { feeRate = DEFAULT_FEE_RATE, ...rest } = options
-  return createAssetTransactionInternal({ ...rest, feeRate })
+  const { feeRate = DEFAULT_FEE_RATE, split = 1, ...rest } = options
+  return createAssetTransactionInternal({ ...rest, feeRate, split })
 }
 
 export const burnAsset = async (
   options: BurnOptions
 ): Promise<SendResult> => {
   const { feeRate = DEFAULT_FEE_RATE, ...rest } = options
-  return createAssetTransactionInternal({ ...rest, feeRate })
+  // A burn creates no recipient output, so there is nothing to split.
+  return createAssetTransactionInternal({ ...rest, feeRate, split: 1 })
 }

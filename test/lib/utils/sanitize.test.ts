@@ -24,6 +24,13 @@ describe('sanitizeUrl', () => {
     expect(sanitizeUrl('localhost:3000/a')).toBe('https://localhost:3000/a')
   })
 
+  it('reads a single-label host with a port as a host', () => {
+    // A private Tapyrus network reaches its services by machine name
+    expect(sanitizeUrl('intranet:8443/logo.png')).toBe('https://intranet:8443/logo.png')
+    expect(sanitizeUrl('myhost:8080')).toBe('https://myhost:8080')
+    expect(sanitizeUrl('INTRANET:8443')).toBe('https://INTRANET:8443')
+  })
+
   it('rejects script-bearing and data schemes', () => {
     expect(sanitizeUrl('javascript:alert(1)')).toBeUndefined()
     expect(sanitizeUrl('vbscript:msgbox(1)')).toBeUndefined()
@@ -32,6 +39,9 @@ describe('sanitizeUrl', () => {
   })
 
   it('rejects any other scheme instead of prefixing https', () => {
+    // Each of these parses once https:// is prefixed, so the host has to be
+    // checked rather than the parse alone: mailto: lands example.com in the
+    // host, file: leaves no port
     expect(sanitizeUrl('mailto:foo@example.com')).toBeUndefined()
     expect(sanitizeUrl('tel:0312345678')).toBeUndefined()
     expect(sanitizeUrl('file:///etc/passwd')).toBeUndefined()
@@ -67,6 +77,10 @@ describe('sanitizeImageUrl', () => {
   it('rejects any other scheme instead of prefixing https', () => {
     expect(sanitizeImageUrl('mailto:foo@example.com')).toBeUndefined()
     expect(sanitizeImageUrl('file:///etc/passwd')).toBeUndefined()
+  })
+
+  it('reads a single-label host with a port as a host', () => {
+    expect(sanitizeImageUrl('intranet:8443/logo.png')).toBe('https://intranet:8443/logo.png')
   })
 
   it('accepts data URLs holding a raster image', () => {

@@ -613,6 +613,18 @@ describe('transaction', () => {
       })
     })
 
+    it('rejects the same arguments the transfer rejects', async () => {
+      // NaN would otherwise walk the whole UTXO set and report "Insufficient
+      // funds" for an address that has plenty
+      await expect(estimateFee(testAddress, NaN)).rejects.toThrow('Invalid amount')
+      await expect(estimateFee(testAddress, 1.5)).rejects.toThrow('Invalid amount')
+      await expect(estimateFee(testAddress, -1)).rejects.toThrow('Invalid amount')
+      await expect(estimateFee(testAddress, 0))
+        .rejects.toThrow(`Amount must be at least ${DUST_THRESHOLD} tapyrus`)
+      await expect(estimateFee(testAddress, DUST_THRESHOLD - 1))
+        .rejects.toThrow(`Amount must be at least ${DUST_THRESHOLD} tapyrus`)
+    })
+
     it('estimates from TPC UTXOs only, ignoring colored UTXOs', async () => {
       const utxos: esplora.Utxo[] = [
         {

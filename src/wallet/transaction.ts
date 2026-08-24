@@ -114,8 +114,16 @@ export const estimateFee = async (
   amount: number,
   feeRate: number = DEFAULT_FEE_RATE
 ): Promise<number> => {
+  // Same validation as createAndSignTransaction, so an estimate that succeeds
+  // is never followed by a transfer that refuses the same arguments.
+  if (!isValidAmount(amount)) {
+    throw new Error("Invalid amount")
+  }
   if (!isValidFeeRate(feeRate)) {
     throw new Error("Invalid fee rate")
+  }
+  if (amount < DUST_THRESHOLD) {
+    throw new Error(`Amount must be at least ${DUST_THRESHOLD} tapyrus`)
   }
   const allUtxos = await getAddressUtxos(fromAddress)
   const utxos = filterUtxosByColorId(allUtxos)

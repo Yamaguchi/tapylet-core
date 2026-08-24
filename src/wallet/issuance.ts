@@ -10,6 +10,7 @@ import {
   estimateTxSize,
   feeForSize,
 } from "../constants/transaction"
+import { selectTpcUtxos } from "./coinSelection"
 
 export {
   TX_OVERHEAD,
@@ -80,35 +81,6 @@ export interface IssueResult {
   paymentBase: string
   // OutPoint for c2/c3 tokens (txid:vout format)
   outPoint?: string
-}
-
-// Select UTXOs for issuance (TPC only)
-const selectUtxosForIssuance = (
-  utxos: Utxo[],
-  targetAmount: number,
-  feeRate: number
-): { selectedUtxos: Utxo[]; totalInput: number; fee: number } => {
-  // Filter TPC UTXOs only
-  const tpcUtxos = utxos.filter((u) => isTpcColorId(u.colorId))
-
-  // Sort by value descending
-  const sorted = [...tpcUtxos].sort((a, b) => b.value - a.value)
-
-  const selectedUtxos: Utxo[] = []
-  let totalInput = 0
-
-  for (const utxo of sorted) {
-    selectedUtxos.push(utxo)
-    totalInput += utxo.value
-
-    // The funding transaction has 2 p2pkh outputs (P2C + change).
-    const fee = feeForSize(estimateTxSize(selectedUtxos.length, 2), feeRate)
-    if (totalInput >= targetAmount + fee) {
-      return { selectedUtxos, totalInput, fee }
-    }
-  }
-
-  throw new Error("Insufficient TPC balance for issuance")
 }
 
 export const issueToken = async (options: IssueOptions): Promise<IssueResult> => {
@@ -202,13 +174,22 @@ const issueTokenInternal = async (
   const tx2EstimatedSize = estimateTxSize(2, 1, splitOutputs.length)
   const tx2Fee = feeForSize(tx2EstimatedSize, feeRate)
 
-  // Tx1 must leave enough change to fund tx2's fee, and that change output
-  // must clear the dust threshold to be added at all. Tx1's own fee is
-  // computed inside the selection from the actual number of inputs.
-  const totalNeeded = p2cAmount + Math.max(tx2Fee, DUST_THRESHOLD)
+  // Tx2 spends tx1's change to pay its own fee, so tx1 must create a change
+  // output that covers it. The funding transaction has 2 p2pkh outputs
+  // (P2C + change); its own fee comes from the actual number of inputs.
+  const { selectedUtxos, change: tx1Change } = selectTpcUtxos(tpcUtxos, {
+    target: p2cAmount,
+    feeRate,
+    baseSize: estimateTxSize(0, 2),
+    minChange: tx2Fee,
+    insufficientFundsMessage: "Insufficient TPC balance for issuance",
+  })
 
-  const { selectedUtxos, totalInput, fee: tx1Fee } =
-    selectUtxosForIssuance(tpcUtxos, totalNeeded, feeRate)
+  // The selection guarantees this, but tx1 is broadcast before tx2 is built:
+  // change too small to pay tx2's fee would strand the P2C output on chain.
+  if (tx1Change < tx2Fee) {
+    throw new Error("Insufficient TPC balance for issuance")
+  }
 
   // --- Transaction 1: Send to P2C address ---
   const txb1 = new tapyrus.TransactionBuilder(network)
@@ -221,11 +202,8 @@ const issueTokenInternal = async (
   // P2C output
   txb1.addOutput(p2cAddress, p2cAmount)
 
-  // Change output (need to reserve for tx2 fee)
-  const tx1Change = totalInput - p2cAmount - tx1Fee
-  if (tx1Change >= DUST_THRESHOLD) {
-    txb1.addOutput(fromAddress, tx1Change)
-  }
+  // Change output, spent by tx2 to pay its fee
+  txb1.addOutput(fromAddress, tx1Change)
 
   for (let i = 0; i < selectedUtxos.length; i++) {
     txb1.sign({ prevOutScriptType: "p2pkh", vin: i, keyPair })
@@ -259,12 +237,9 @@ const issueTokenInternal = async (
   // Input 0: P2C output from tx1
   txb2.addInput(tx1id, 0)
 
-  // Input 1: Change from tx1 for fee (if available)
-  let tx2InputTotal = p2cAmount
-  if (tx1Change >= DUST_THRESHOLD) {
-    txb2.addInput(tx1id, 1)
-    tx2InputTotal += tx1Change
-  }
+  // Input 1: Change from tx1, which pays tx2's fee
+  txb2.addInput(tx1id, 1)
+  const tx2InputTotal = p2cAmount + tx1Change
 
   // Colored outputs (one per split, all to fromAddress)
   const fromAddressDecoded = tapyrus.address.fromBase58Check(fromAddress)
@@ -277,11 +252,10 @@ const issueTokenInternal = async (
     txb2.addOutput(coloredScript, outputAmount)
   }
 
-  // Change output
+  // Change output. tx1Change covers tx2Fee, so what is left is at least the
+  // p2cAmount of DUST_THRESHOLD and always clears the dust threshold.
   const tx2Change = tx2InputTotal - tx2Fee
-  if (tx2Change >= DUST_THRESHOLD) {
-    txb2.addOutput(fromAddress, tx2Change)
-  }
+  txb2.addOutput(fromAddress, tx2Change)
 
   // Derive P2C private key: p2cPrivateKey = privateKey + commitment
   const commitment = metadata.commitment(publicKey)
@@ -298,14 +272,12 @@ const issueTokenInternal = async (
     keyPair: p2cKeyPair,
   })
 
-  // Sign change input (if present) with normal keyPair
-  if (tx1Change >= DUST_THRESHOLD) {
-    txb2.sign({
-      prevOutScriptType: "p2pkh",
-      vin: 1,
-      keyPair,
-    })
-  }
+  // Sign the change input with the normal keyPair
+  txb2.sign({
+    prevOutScriptType: "p2pkh",
+    vin: 1,
+    keyPair,
+  })
 
   const tx2 = txb2.build()
   const tx2id = await broadcastTransaction(tx2.toHex())

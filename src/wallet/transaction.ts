@@ -6,10 +6,9 @@ import { isValidAmount, isValidFeeRate, MAX_COLORED_AMOUNT } from "../utils/vali
 import {
   DUST_THRESHOLD,
   DEFAULT_FEE_RATE,
-  P2PKH_INPUT_SIZE,
   estimateTxSize,
-  feeForSize,
 } from "../constants/transaction"
+import { selectTpcUtxos } from "./coinSelection"
 
 // Filter UTXOs by colorId
 const filterUtxosByColorId = (utxos: Utxo[], colorId?: string): Utxo[] => {
@@ -32,35 +31,6 @@ export interface SendOptions {
   amount: number // in tapyrus
   mnemonic: string
   feeRate?: number
-}
-
-// Select TPC UTXOs so that their total covers targetAmount plus the fee for
-// the whole transaction. `baseSize` is the byte size of the transaction
-// excluding the inputs selected here (overhead, other inputs, all outputs);
-// the returned fee accounts for baseSize plus the selected inputs.
-const selectUtxos = (
-  utxos: Utxo[],
-  targetAmount: number,
-  feeRate: number,
-  baseSize: number
-): { selectedUtxos: Utxo[]; totalInput: number; fee: number } => {
-  // Sort UTXOs by value (largest first) for efficient selection
-  const sortedUtxos = [...utxos].sort((a, b) => b.value - a.value)
-
-  const selectedUtxos: Utxo[] = []
-  let totalInput = 0
-
-  for (const utxo of sortedUtxos) {
-    selectedUtxos.push(utxo)
-    totalInput += utxo.value
-
-    const fee = feeForSize(baseSize + selectedUtxos.length * P2PKH_INPUT_SIZE, feeRate)
-    if (totalInput >= targetAmount + fee) {
-      return { selectedUtxos, totalInput, fee }
-    }
-  }
-
-  throw new Error("Insufficient funds")
 }
 
 export const createAndSignTransaction = async (
@@ -92,12 +62,11 @@ export const createAndSignTransaction = async (
   }
 
   // Select UTXOs; the transaction has 2 p2pkh outputs (recipient + change)
-  const { selectedUtxos, totalInput, fee } = selectUtxos(
-    utxos,
-    amount,
+  const { selectedUtxos, change } = selectTpcUtxos(utxos, {
+    target: amount,
     feeRate,
-    estimateTxSize(0, 2)
-  )
+    baseSize: estimateTxSize(0, 2),
+  })
 
   // Get keys from mnemonic
   const { keyPair, network } = await getKeyPairFromMnemonic(mnemonic)
@@ -115,8 +84,7 @@ export const createAndSignTransaction = async (
   txb.addOutput(toAddress, amount)
 
   // Add change output if needed
-  const change = totalInput - amount - fee
-  if (change >= DUST_THRESHOLD) {
+  if (change > 0) {
     txb.addOutput(fromAddress, change)
   }
 
@@ -139,9 +107,8 @@ export const createAndSignTransaction = async (
   return { txid, txHex }
 }
 
-// Estimate the fee for a TPC transfer. When the change ends up below the dust
-// threshold, the actual transaction donates it to the fee, so the fee paid can
-// exceed this estimate by up to DUST_THRESHOLD - 1.
+// Estimate the fee for a TPC transfer, including any change too small to
+// become its own output and therefore donated to the fee.
 export const estimateFee = async (
   fromAddress: string,
   amount: number,
@@ -152,7 +119,11 @@ export const estimateFee = async (
   }
   const allUtxos = await getAddressUtxos(fromAddress)
   const utxos = filterUtxosByColorId(allUtxos)
-  const { fee } = selectUtxos(utxos, amount, feeRate, estimateTxSize(0, 2))
+  const { fee } = selectTpcUtxos(utxos, {
+    target: amount,
+    feeRate,
+    baseSize: estimateTxSize(0, 2),
+  })
   return fee
 }
 
@@ -250,13 +221,18 @@ const createAssetTransactionInternal = async (
   // asset inputs + colored outputs + 1 p2pkh output for TPC change.
   const baseSize = estimateTxSize(selectedAssetUtxos.length, 1, coloredOutputs)
 
-  // A burn with no asset change has no colored output, so the TPC change
-  // output is the only output and must clear the dust threshold.
-  const tpcTarget = coloredOutputs === 0 ? DUST_THRESHOLD : 0
-
-  // Select TPC UTXOs for fee
-  const { selectedUtxos: selectedTpcUtxos, totalInput: totalTpcInput, fee } =
-    selectUtxos(tpcUtxos, tpcTarget, feeRate, baseSize)
+  // Select TPC UTXOs for fee. The TPC inputs pay no output other than change,
+  // so the target is 0. A burn with no asset change has no colored output,
+  // which leaves the TPC change as the only output: it must then exist.
+  const { selectedUtxos: selectedTpcUtxos, change: tpcChange } = selectTpcUtxos(
+    tpcUtxos,
+    {
+      target: 0,
+      feeRate,
+      baseSize,
+      minChange: coloredOutputs === 0 ? DUST_THRESHOLD : undefined,
+    }
+  )
 
   // Get keys from mnemonic
   const { keyPair, network } = await getKeyPairFromMnemonic(mnemonic)
@@ -308,8 +284,7 @@ const createAssetTransactionInternal = async (
   }
 
   // Add TPC change output if needed
-  const tpcChange = totalTpcInput - fee
-  if (tpcChange >= DUST_THRESHOLD) {
+  if (tpcChange > 0) {
     txb.addOutput(fromAddress, tpcChange)
   }
 

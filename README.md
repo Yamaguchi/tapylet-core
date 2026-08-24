@@ -178,12 +178,28 @@ address, so URLs read out of metadata are untrusted. Pass them through the
 sanitizers before rendering.
 
 - `sanitizeUrl` accepts `https:`, `http:` and `ipfs:`, and prefixes `https://`
-  when the input carries no scheme. Everything else, `javascript:` and `data:`
-  included, returns `undefined`.
-- `sanitizeImageUrl` accepts `https:` URLs and `data:` URLs holding a raster
-  image (`png`, `jpeg`, `jpg`, `gif`, `webp`), and prefixes `https://` when the
-  input carries no scheme. `http:`, `ipfs:` and `data:image/svg+xml` return
+  when the input carries no scheme. A host followed by a port
+  (`example.com:8080/a`, `intranet:8443`) counts as carrying no scheme.
+  `https:` and `http:` must name a host: `https:example.com` has no authority
+  and a browser resolves it against the page it is rendered on, so it returns
+  `undefined`. Everything else, `javascript:` and `data:` included, returns
   `undefined`.
+- `sanitizeImageUrl` accepts `https:` URLs and `data:` URLs declaring a raster
+  image media type (`png`, `jpeg`, `jpg`, `gif`, `webp`), and prefixes
+  `https://` when the input carries no scheme. `http:`, `ipfs:` and
+  `data:image/svg+xml` return `undefined`.
+
+**What `sanitizeImageUrl` does not promise.** The check stops at the URL, so
+what comes back is only safe to render through `<img>`, which keeps an SVG
+inert whatever the bytes turn out to be.
+
+- For a `data:` URL the media type is what the URL declares about itself. The
+  payload is never decoded, so `data:image/png;base64,<an SVG>` passes.
+- For an `https:` URL nothing about the response is known at all, so
+  `https://example.com/icon.svg` passes.
+
+A consumer that fetches the image and inlines it, or renders it through
+`<object>`, `<embed>` or a WebView, needs its own guard.
 
 ## Development
 

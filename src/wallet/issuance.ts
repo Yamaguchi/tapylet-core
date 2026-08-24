@@ -4,7 +4,12 @@ import * as ecc from "../lib/secp256k1-compat"
 import { getAddressUtxos, broadcastTransaction, isTpcColorId, type Utxo } from "../api/esplora"
 import { getKeyPairFromMnemonic } from "./hdwallet"
 import { isValidFeeRate } from "../utils/validation"
-import { DUST_THRESHOLD, DEFAULT_FEE_RATE, estimateTxSize } from "../constants/transaction"
+import {
+  DUST_THRESHOLD,
+  DEFAULT_FEE_RATE,
+  estimateTxSize,
+  feeForSize,
+} from "../constants/transaction"
 
 export {
   TX_OVERHEAD,
@@ -97,9 +102,7 @@ const selectUtxosForIssuance = (
     totalInput += utxo.value
 
     // The funding transaction has 2 p2pkh outputs (P2C + change).
-    // Round up so the fee stays an integer for non-integer fee rates;
-    // output amounts must be integers.
-    const fee = Math.ceil(estimateTxSize(selectedUtxos.length, 2) * feeRate)
+    const fee = feeForSize(estimateTxSize(selectedUtxos.length, 2), feeRate)
     if (totalInput >= targetAmount + fee) {
       return { selectedUtxos, totalInput, fee }
     }
@@ -197,9 +200,7 @@ const issueTokenInternal = async (
   // Tx2 fee: 1 P2C input + 1 input for fee, N colored outputs (one per split)
   // + 1 p2pkh change output
   const tx2EstimatedSize = estimateTxSize(2, 1, splitOutputs.length)
-  // Round up so the fee stays an integer for non-integer fee rates;
-  // output amounts must be integers.
-  const tx2Fee = Math.ceil(tx2EstimatedSize * feeRate)
+  const tx2Fee = feeForSize(tx2EstimatedSize, feeRate)
 
   // Tx1 must leave enough change to fund tx2's fee, and that change output
   // must clear the dust threshold to be added at all. Tx1's own fee is

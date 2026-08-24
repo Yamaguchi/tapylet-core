@@ -8,6 +8,7 @@ import {
   DEFAULT_FEE_RATE,
   P2PKH_INPUT_SIZE,
   estimateTxSize,
+  feeForSize,
 } from "../constants/transaction"
 
 // Filter UTXOs by colorId
@@ -53,9 +54,7 @@ const selectUtxos = (
     selectedUtxos.push(utxo)
     totalInput += utxo.value
 
-    // Round up so the fee stays an integer for non-integer fee rates;
-    // output amounts must be integers.
-    const fee = Math.ceil((baseSize + selectedUtxos.length * P2PKH_INPUT_SIZE) * feeRate)
+    const fee = feeForSize(baseSize + selectedUtxos.length * P2PKH_INPUT_SIZE, feeRate)
     if (totalInput >= targetAmount + fee) {
       return { selectedUtxos, totalInput, fee }
     }

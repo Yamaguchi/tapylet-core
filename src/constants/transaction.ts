@@ -23,3 +23,9 @@ export const estimateTxSize = (
   P2PKH_INPUT_SIZE * inputs +
   P2PKH_OUTPUT_SIZE * p2pkhOutputs +
   COLORED_OUTPUT_SIZE * coloredOutputs
+
+// Fee for a transaction of the given byte size. The result is rounded up so
+// that it stays an integer for non-integer fee rates: it is subtracted from
+// output amounts, which must be integers.
+export const feeForSize = (size: number, feeRate: number): number =>
+  Math.ceil(size * feeRate)

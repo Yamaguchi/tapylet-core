@@ -47,6 +47,18 @@ describe('sanitizeUrl', () => {
     expect(sanitizeUrl('file:///etc/passwd')).toBeUndefined()
   })
 
+  it('rejects an http or https URL that names no host', () => {
+    // A browser resolves "https:example.com" against the page it is rendered
+    // on, so the link would point back at the wallet itself
+    expect(sanitizeUrl('https:example.com')).toBeUndefined()
+    expect(sanitizeUrl('http:example.com/a')).toBeUndefined()
+    expect(sanitizeUrl('HTTPS:example.com')).toBeUndefined()
+  })
+
+  it('keeps accepting ipfs without an authority', () => {
+    expect(sanitizeUrl('ipfs:cid/a')).toBe('ipfs:cid/a')
+  })
+
   it('rejects empty input', () => {
     expect(sanitizeUrl(undefined)).toBeUndefined()
     expect(sanitizeUrl('')).toBeUndefined()
@@ -122,6 +134,10 @@ describe('sanitizeImageUrl', () => {
   it('rejects script-bearing schemes', () => {
     expect(sanitizeImageUrl('javascript:alert(1)')).toBeUndefined()
     expect(sanitizeImageUrl('vbscript:msgbox(1)')).toBeUndefined()
+  })
+
+  it('rejects an https URL that names no host, as sanitizeUrl does', () => {
+    expect(sanitizeImageUrl('https:example.com/a.png')).toBeUndefined()
   })
 
   it('rejects empty input', () => {

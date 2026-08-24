@@ -1,5 +1,6 @@
 import { issueToken, splitAmount, type TokenType, type MetadataFields } from '~/core/wallet/issuance'
 import { estimateTxSize } from '~/core/constants/transaction'
+import { MAX_FEE_RATE } from '~/core/utils/validation'
 import * as tapyrus from 'tapyrusjs-lib'
 import * as esplora from '~/core/api/esplora'
 import * as hdwallet from '~/core/wallet/hdwallet'
@@ -474,6 +475,17 @@ describe('issuance', () => {
         mnemonic: testMnemonic,
         fromAddress: testAddress,
         feeRate: 0.5,
+      })).rejects.toThrow('Invalid fee rate')
+    })
+
+    it('should throw error if fee rate is above the absurd-fee limit', async () => {
+      await expect(issueToken({
+        tokenType: 'reissuable',
+        amount: 1000000,
+        metadata: { ...baseMetadata, tokenType: 'reissuable' },
+        mnemonic: testMnemonic,
+        fromAddress: testAddress,
+        feeRate: MAX_FEE_RATE + 1,
       })).rejects.toThrow('Invalid fee rate')
     })
   })

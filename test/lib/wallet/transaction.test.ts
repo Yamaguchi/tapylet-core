@@ -1,5 +1,6 @@
 import { createAndSignTransaction, createAndSignAssetTransaction, burnAsset, estimateFee } from '~/core/wallet/transaction'
 import { estimateTxSize, DEFAULT_FEE_RATE, DUST_THRESHOLD, P2PKH_INPUT_SIZE } from '~/core/constants/transaction'
+import { MAX_FEE_RATE } from '~/core/utils/validation'
 import * as tapyrus from 'tapyrusjs-lib'
 import * as esplora from '~/core/api/esplora'
 import * as hdwallet from '~/core/wallet/hdwallet'
@@ -103,6 +104,41 @@ describe('transaction', () => {
         mnemonic: testMnemonic,
         feeRate: 0,
       })).rejects.toThrow('Invalid fee rate')
+    })
+
+    it('should throw error if fee rate is above the absurd-fee limit', async () => {
+      await expect(createAndSignTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 10000000,
+        mnemonic: testMnemonic,
+        feeRate: MAX_FEE_RATE + 1,
+      })).rejects.toThrow('Invalid fee rate')
+    })
+
+    it('should accept a fee rate at the absurd-fee limit', async () => {
+      const utxos: esplora.Utxo[] = [{
+        txid: 'a'.repeat(64),
+        vout: 0,
+        status: { confirmed: true },
+        value: 1000000000,
+        colorId: esplora.TPC_COLOR_ID,
+      }]
+      mockedEsplora.getAddressUtxos.mockResolvedValue(utxos)
+
+      const result = await createAndSignTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 10000,
+        mnemonic: testMnemonic,
+        feeRate: MAX_FEE_RATE,
+      })
+
+      // tapyrusjs-lib refuses to build above 2500 tapyrus/byte, so the limit
+      // has to stay below that for a transaction at the limit to be buildable
+      const tx = tapyrus.Transaction.fromHex(result.txHex)
+      const outTotal = tx.outs.reduce((sum, out) => sum + out.value, 0)
+      expect(utxos[0].value - outTotal).toBe(estimateTxSize(1, 2) * MAX_FEE_RATE)
     })
 
     it('should throw error if no TPC UTXOs available', async () => {
@@ -210,6 +246,17 @@ describe('transaction', () => {
         colorId: testColorId,
         mnemonic: testMnemonic,
         feeRate: -1,
+      })).rejects.toThrow('Invalid fee rate')
+    })
+
+    it('should throw error if fee rate is above the absurd-fee limit', async () => {
+      await expect(createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 500,
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+        feeRate: MAX_FEE_RATE + 1,
       })).rejects.toThrow('Invalid fee rate')
     })
 

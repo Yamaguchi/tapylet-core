@@ -13,11 +13,21 @@ export const MAX_COLORED_AMOUNT = Number.MAX_SAFE_INTEGER
 // would produce transactions that are rejected on broadcast.
 export const MIN_FEE_RATE = 1
 
+// A rate this far above the minimum is a mistyped digit or a rate given in
+// tapyrus per kilobyte, not an intent: a 226-byte transfer at 1000
+// tapyrus/byte pays 226,000 tapyrus in fees. tapyrusjs-lib refuses to build a
+// transaction above 2500 tapyrus/byte, so rejecting the rate here reports the
+// problem against the argument that caused it instead of at build time.
+export const MAX_FEE_RATE = 1000
+
 /**
  * Validate that a fee rate (tapyrus per byte) produces relayable transactions
+ * without paying an absurd fee
  */
 export const isValidFeeRate = (feeRate: number): boolean => {
-  return Number.isFinite(feeRate) && feeRate >= MIN_FEE_RATE
+  return (
+    Number.isFinite(feeRate) && feeRate >= MIN_FEE_RATE && feeRate <= MAX_FEE_RATE
+  )
 }
 
 /**

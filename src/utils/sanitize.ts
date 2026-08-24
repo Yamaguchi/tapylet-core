@@ -37,7 +37,14 @@ const schemeOf = (url: string): string | undefined => {
 }
 
 /**
- * Sanitize URL to prevent XSS attacks via javascript: or data: URLs
+ * Sanitize a URL read from token metadata.
+ *
+ * Accepts `https:`, `http:` and `ipfs:`. Input carrying no scheme gets
+ * `https://` prefixed, and a host followed by a port (`intranet:8443/logo.png`)
+ * counts as carrying no scheme. `https:` and `http:` must name a host:
+ * `https:example.com` has no authority and a browser resolves it against the
+ * page it is rendered on. Everything else, `javascript:` and `data:` included,
+ * returns `undefined`.
  */
 export const sanitizeUrl = (url: string | undefined): string | undefined => {
   if (!url) return undefined
@@ -62,11 +69,8 @@ export const sanitizeUrl = (url: string | undefined): string | undefined => {
   return trimmed
 }
 
-// Raster image media types accepted in a data: URL. image/svg+xml is excluded:
-// an SVG document can carry script, so it is only inert while the consumer
-// renders it through <img>. The media type is what the URL declares about
-// itself and the payload behind it is not checked, so a consumer that renders
-// the image some other way needs its own guard.
+// Raster image media types accepted in a data: URL. image/svg+xml is excluded
+// because an SVG document can carry script.
 const ALLOWED_IMAGE_DATA_MEDIA_TYPES = [
   "image/png",
   "image/jpeg",
@@ -78,7 +82,21 @@ const ALLOWED_IMAGE_DATA_MEDIA_TYPES = [
 const DATA_MEDIA_TYPE_PATTERN = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+)[;,]/i
 
 /**
- * Sanitize image URL - allows https: URLs and data: URLs holding a raster image
+ * Sanitize an image URL read from token metadata.
+ *
+ * Accepts `https:` URLs and `data:` URLs declaring a raster image media type
+ * (`png`, `jpeg`, `jpg`, `gif`, `webp`), and prefixes `https://` when the input
+ * carries no scheme. `http:`, `ipfs:` and `data:image/svg+xml` return
+ * `undefined`.
+ *
+ * **The check stops at the URL, so the result is only safe to render through
+ * `<img>`**, which keeps an SVG inert whatever the bytes turn out to be. For a
+ * `data:` URL the media type is what the URL declares about itself and the
+ * payload is never decoded. For an `https:` URL nothing about the response is
+ * known at all, so `https://example.com/icon.svg` passes.
+ *
+ * A consumer that fetches the image and inlines it, or renders it through
+ * `<object>`, `<embed>` or a WebView, needs its own guard.
  */
 export const sanitizeImageUrl = (url: string | undefined): string | undefined => {
   if (!url) return undefined

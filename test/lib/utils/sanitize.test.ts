@@ -47,6 +47,13 @@ describe('sanitizeUrl', () => {
     expect(sanitizeUrl('file:///etc/passwd')).toBeUndefined()
   })
 
+  it('prefixes https rather than returning a scheme it read as a host', () => {
+    // "javascript:1234" is shaped like a host and a port, so it is read as
+    // one. Whatever that branch accepts comes back with https:// prefixed, so
+    // the scheme can never reach an href
+    expect(sanitizeUrl('javascript:1234')).toBe('https://javascript:1234')
+  })
+
   it('rejects an http or https URL that names no host', () => {
     // A browser resolves "https:example.com" against the page it is rendered
     // on, so the link would point back at the wallet itself

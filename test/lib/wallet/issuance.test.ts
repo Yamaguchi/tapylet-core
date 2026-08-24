@@ -1,4 +1,5 @@
-import { issueToken, splitAmount, estimateTxSize, type TokenType, type MetadataFields } from '~/core/wallet/issuance'
+import { issueToken, splitAmount, type TokenType, type MetadataFields } from '~/core/wallet/issuance'
+import { estimateTxSize } from '~/core/constants/transaction'
 import * as tapyrus from 'tapyrusjs-lib'
 import * as esplora from '~/core/api/esplora'
 import * as hdwallet from '~/core/wallet/hdwallet'

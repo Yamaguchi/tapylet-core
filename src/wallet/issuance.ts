@@ -12,14 +12,6 @@ import {
 } from "../constants/transaction"
 import { selectTpcUtxos } from "./coinSelection"
 
-export {
-  TX_OVERHEAD,
-  P2PKH_INPUT_SIZE,
-  P2PKH_OUTPUT_SIZE,
-  COLORED_OUTPUT_SIZE,
-  estimateTxSize,
-} from "../constants/transaction"
-
 export type TokenType = "reissuable" | "non_reissuable" | "nft"
 
 export interface MetadataFields {

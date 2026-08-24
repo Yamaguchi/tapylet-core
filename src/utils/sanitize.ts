@@ -4,14 +4,31 @@ const ALLOWED_URL_SCHEMES = ["https:", "http:", "ipfs:"]
 
 const SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:/i
 
-// "example.com:8080/a" carries a port, not a scheme. A host name followed by a
-// colon, digits, and then a path delimiter or the end of the string is a port.
-// The host must look like a host, otherwise "tel:0312345678" would read as one.
-const HOST_WITH_PORT_PATTERN = /^(?:localhost|[a-z0-9-]+(?:\.[a-z0-9-]+)+):\d+([/?#]|$)/i
+// "example.com:8080/a" and "intranet:8443/logo.png" carry a port, not a
+// scheme. Prefixing https:// tells the two apart: the text before the colon
+// has to come back as the host and what follows as the port. That rules out
+// "javascript:alert(1)", which has no port at all, and "mailto:foo@example.com",
+// which parses but puts example.com in the host and "mailto:foo" in the
+// userinfo.
+//
+// Whatever this accepts is returned with https:// prefixed, so reading a
+// scheme as a host cannot produce a dangerous URL — only a link to a host
+// that does not exist.
+const isHostWithPort = (url: string): boolean => {
+  let parsed: URL
+  try {
+    parsed = new URL(`https://${url}`)
+  } catch {
+    return false
+  }
+  const beforeColon = url.slice(0, url.indexOf(":")).toLowerCase()
+  return parsed.port !== "" && parsed.hostname === beforeColon
+}
 
 const schemeOf = (url: string): string | undefined => {
-  if (HOST_WITH_PORT_PATTERN.test(url)) return undefined
-  return url.match(SCHEME_PATTERN)?.[0].toLowerCase()
+  const scheme = url.match(SCHEME_PATTERN)?.[0].toLowerCase()
+  if (!scheme || isHostWithPort(url)) return undefined
+  return scheme
 }
 
 /**

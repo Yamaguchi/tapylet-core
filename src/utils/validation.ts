@@ -2,12 +2,14 @@
  * Validation utilities for API responses and user inputs
  */
 
-// Maximum safe integer for amounts (avoid overflow issues)
-// Tapyrus max supply is 21 million * 10^8 tapyrus = 2.1 * 10^15
+// Tapyrus max supply is 21 million * 10^8 tapyrus = 2.1 * 10^15, which is also
+// the largest value a transaction output can carry: tapyrusjs-lib refuses to
+// add an output above it.
 export const MAX_AMOUNT = 2_100_000_000_000_000 // 21 million TPC in tapyrus units
 
-// Maximum amount for colored coins (arbitrary but reasonable limit)
-export const MAX_COLORED_AMOUNT = Number.MAX_SAFE_INTEGER
+// A colored amount is stored in the same output value field as TPC, so it is
+// bound by the same maximum.
+export const MAX_COLORED_AMOUNT = MAX_AMOUNT
 
 // Nodes relay transactions only at 1 tapyrus/byte or more, so a lower rate
 // would produce transactions that are rejected on broadcast.

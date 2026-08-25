@@ -113,6 +113,21 @@ output of 100. For TPC every output must clear the dust threshold.
 `createAndSignAssetTransaction` accepts the same option for Colored Coins, where
 an amount smaller than `split` yields `amount` outputs of 1 instead.
 
+`createAndSignTransaction` requires an uncolored recipient address, because it
+spends TPC inputs only and so cannot fund a colored output.
+
+`feeRate` is given in tapyrus per byte and must be between 1 and 1000. Nodes
+relay a transaction only at 1 or more, and a rate above 1000 costs more in fees
+than any transfer is worth, so both ends are rejected before the transaction is
+built.
+
+`estimateFee` returns the fee a transfer of the same arguments would pay,
+including a leftover too small to become its own change output:
+
+```ts
+const fee = await estimateFee(address, 1000, { feeRate: 10, split: 4 })
+```
+
 ### Token issuance
 
 ```ts

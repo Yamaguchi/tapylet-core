@@ -1,6 +1,6 @@
 import { issueToken, splitAmount, type TokenType, type MetadataFields } from '~/core/wallet/issuance'
 import { estimateTxSize } from '~/core/constants/transaction'
-import { MAX_FEE_RATE } from '~/core/utils/validation'
+import { MAX_FEE_RATE, MAX_COLORED_AMOUNT } from '~/core/utils/validation'
 import * as tapyrus from 'tapyrusjs-lib'
 import * as esplora from '~/core/api/esplora'
 import * as hdwallet from '~/core/wallet/hdwallet'
@@ -387,6 +387,19 @@ describe('issuance', () => {
         fromAddress: testAddress,
       })).rejects.toThrow('split must be an integer between 1 and 100')
     })
+
+    it('should throw error if split is out of range for an NFT', async () => {
+      // The NFT substitution to 1 must not swallow an invalid argument
+      await expect(issueToken({
+        tokenType: 'nft',
+        amount: 1,
+        split: 150,
+        metadata: { ...baseMetadata, tokenType: 'nft' },
+        mnemonic: testMnemonic,
+        fromAddress: testAddress,
+      })).rejects.toThrow('split must be an integer between 1 and 100')
+      expect(mockedEsplora.broadcastTransaction).not.toHaveBeenCalled()
+    })
   })
 
   describe('issueToken - validation', () => {
@@ -406,6 +419,19 @@ describe('issuance', () => {
         mnemonic: testMnemonic,
         fromAddress: testAddress,
       })).rejects.toThrow('Amount must be a positive integer')
+    })
+
+    it('should throw error if amount exceeds the maximum output amount', async () => {
+      // tapyrusjs-lib refuses such an output while building tx2, which is
+      // after tx1 has already been broadcast
+      await expect(issueToken({
+        tokenType: 'reissuable',
+        amount: MAX_COLORED_AMOUNT + 1,
+        metadata: { ...baseMetadata, tokenType: 'reissuable' },
+        mnemonic: testMnemonic,
+        fromAddress: testAddress,
+      })).rejects.toThrow('Amount must be a positive integer')
+      expect(mockedEsplora.broadcastTransaction).not.toHaveBeenCalled()
     })
 
     it('should throw error if amount is not an integer', async () => {

@@ -1,12 +1,10 @@
 import { selectTpcUtxos } from '~/core/wallet/coinSelection'
-import type { Utxo } from '~/core/api/esplora'
+import { TPC_COLOR_ID, type Utxo } from '~/core/api/esplora'
 import {
   DUST_THRESHOLD,
   P2PKH_INPUT_SIZE,
   estimateTxSize,
 } from '~/core/constants/transaction'
-
-const TPC_COLOR_ID = '000000000000000000000000000000000000000000000000000000000000000000'
 
 const utxo = (index: number, value: number): Utxo => ({
   txid: String(index).repeat(64),

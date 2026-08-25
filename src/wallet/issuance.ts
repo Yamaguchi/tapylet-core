@@ -169,12 +169,6 @@ const issueTokenInternal = async (
     insufficientFundsMessage: "Insufficient TPC balance for issuance",
   })
 
-  // The selection guarantees this, but tx1 is broadcast before tx2 is built:
-  // change too small to pay tx2's fee would strand the P2C output on chain.
-  if (tx1Change < tx2Fee) {
-    throw new Error("Insufficient TPC balance for issuance")
-  }
-
   // --- Transaction 1: Send to P2C address ---
   const txb1 = new tapyrus.TransactionBuilder(network)
   txb1.setVersion(1)

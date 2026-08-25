@@ -24,6 +24,17 @@ export const validateAddress = (address: string): boolean => {
   }
 }
 
+// A colored address carries a colorId, so paying it yields a cp2pkh/cp2sh
+// output. Only a transaction that also spends colored inputs of that colorId
+// can create one, so an uncolored transfer must reject such an address.
+export const isColoredAddress = (address: string): boolean => {
+  try {
+    return tapyrus.address.fromBase58Check(address).colorId !== undefined
+  } catch {
+    return false
+  }
+}
+
 export const shortenAddress = (address: string, chars = 6): string => {
   if (address.length <= chars * 2) {
     return address

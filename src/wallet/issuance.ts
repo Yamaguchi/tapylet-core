@@ -3,7 +3,7 @@ import { Metadata } from "tapyrusjs-lib"
 import * as ecc from "../lib/secp256k1-compat"
 import { getAddressUtxos, broadcastTransaction, isTpcColorId, type Utxo } from "../api/esplora"
 import { getKeyPairFromMnemonic } from "./hdwallet"
-import { isValidFeeRate } from "../utils/validation"
+import { isValidAmount, isValidFeeRate, MAX_COLORED_AMOUNT } from "../utils/validation"
 import {
   DUST_THRESHOLD,
   DEFAULT_FEE_RATE,
@@ -74,17 +74,23 @@ export const issueToken = async (options: IssueOptions): Promise<IssueResult> =>
     split = 1,
   } = options
 
-  if (!Number.isInteger(amount) || amount <= 0) {
-    throw new Error("Amount must be a positive integer")
+  // The issued amount ends up in colored outputs, so it must fit the output
+  // value field. Tx1 is broadcast before those outputs are built, so an
+  // amount that cannot encode has to be rejected before any I/O.
+  if (!isValidAmount(amount, MAX_COLORED_AMOUNT) || amount <= 0) {
+    throw new Error(
+      `Amount must be a positive integer no greater than ${MAX_COLORED_AMOUNT}`
+    )
   }
   if (!isValidFeeRate(feeRate)) {
     throw new Error("Invalid fee rate")
   }
+  // Validated before the NFT substitution below, so an out-of-range split is
+  // rejected for every token type.
+  validateSplitRange(split)
 
   // NFTs are indivisible; any other token may be split across outputs.
   const effectiveSplit = tokenType === "nft" ? 1 : split
-
-  validateSplitRange(effectiveSplit)
 
   // Get keys from mnemonic
   const { keyPair, publicKey, network } = await getKeyPairFromMnemonic(mnemonic)

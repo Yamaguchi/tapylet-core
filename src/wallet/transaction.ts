@@ -1,7 +1,7 @@
 import * as tapyrus from "tapyrusjs-lib"
 import { getAddressUtxos, broadcastTransaction, isTpcColorId, type Utxo } from "../api/esplora"
 import { getKeyPairFromMnemonic } from "./hdwallet"
-import { validateAddress } from "./address"
+import { validateAddress, isColoredAddress } from "./address"
 import { isValidAmount, isValidFeeRate, MAX_COLORED_AMOUNT } from "../utils/validation"
 import {
   DUST_THRESHOLD,
@@ -89,6 +89,12 @@ export const createAndSignTransaction = async (
   if (!validateAddress(toAddress)) {
     throw new Error("Invalid recipient address")
   }
+  // This transaction spends TPC inputs only, so it cannot fund a colored
+  // output. Rejecting the address here reports the problem against the
+  // argument instead of as a consensus error on broadcast.
+  if (isColoredAddress(toAddress)) {
+    throw new Error("Recipient address must not be a colored address")
+  }
 
   // Get UTXOs (TPC only)
   const allUtxos = await getAddressUtxos(fromAddress)
@@ -161,16 +167,26 @@ export const estimateFee = async (
   amount: number,
   options: EstimateFeeOptions = {}
 ): Promise<number> => {
+  // A bare number would destructure into an undefined feeRate and silently
+  // fall back to DEFAULT_FEE_RATE, returning an estimate for a rate the caller
+  // never asked for.
+  if (typeof (options as unknown) === "number") {
+    throw new Error(
+      "estimateFee takes its options as an object: estimateFee(fromAddress, amount, { feeRate })"
+    )
+  }
   const { feeRate = DEFAULT_FEE_RATE, split = 1 } = options
   validateTransferArgs(amount, feeRate, split)
+  const recipientOutputs = splitAmount(amount, split)
   const allUtxos = await getAddressUtxos(fromAddress)
   const utxos = filterUtxosByColorId(allUtxos)
+  if (utxos.length === 0) {
+    throw new Error("No TPC UTXOs available")
+  }
   const { fee } = selectTpcUtxos(utxos, {
     target: amount,
     feeRate,
-    // Every output clears the dust threshold, so the recipient output count
-    // always equals `split`.
-    baseSize: estimateTxSize(0, split + 1),
+    baseSize: estimateTxSize(0, recipientOutputs.length + 1),
   })
   return fee
 }
@@ -218,32 +234,38 @@ const selectAssetUtxos = (
   throw new Error("Insufficient asset balance")
 }
 
-// Internal options for asset transactions (transfer or burn)
-interface AssetTransactionInternalOptions {
+// Internal options for asset transactions. `mode` says whether the amount goes
+// to a recipient or is destroyed, so a falsy toAddress can never be read as an
+// instruction to burn.
+type AssetTransactionInternalOptions = {
   fromAddress: string
-  toAddress?: string // undefined for burn
   amount: number
   colorId: string
   mnemonic: string
   feeRate: number
   split: number
-}
+} & ({ mode: "transfer"; toAddress: string } | { mode: "burn" })
 
 // Internal function for both asset transfer and burn
 const createAssetTransactionInternal = async (
   options: AssetTransactionInternalOptions
 ): Promise<SendResult> => {
-  const { fromAddress, toAddress, amount, colorId, mnemonic, feeRate, split } = options
-  const isBurn = !toAddress
+  const { fromAddress, amount, colorId, mnemonic, feeRate, split } = options
+  const isBurn = options.mode === "burn"
 
-  if (!isValidAmount(amount, MAX_COLORED_AMOUNT) || amount <= 0) {
+  if (!Number.isInteger(amount) || amount <= 0) {
     throw new Error("Amount must be greater than 0")
+  }
+  // Every colored output the transaction creates must fit the output value
+  // field, so reject an oversized amount before any I/O.
+  if (!isValidAmount(amount, MAX_COLORED_AMOUNT)) {
+    throw new Error(`Amount must not exceed ${MAX_COLORED_AMOUNT}`)
   }
   if (!isValidFeeRate(feeRate)) {
     throw new Error("Invalid fee rate")
   }
   // Validate the recipient address for transfers (burn has no recipient).
-  if (!isBurn && !validateAddress(toAddress)) {
+  if (options.mode === "transfer" && !validateAddress(options.toAddress)) {
     throw new Error("Invalid recipient address")
   }
   validateSplitRange(split)
@@ -268,6 +290,13 @@ const createAssetTransactionInternal = async (
     selectAssetUtxos(assetUtxos, amount)
 
   const assetChange = totalAssetInput - amount
+  // The change is a single colored output, so it is bound by the same maximum
+  // as the amount.
+  if (assetChange > MAX_COLORED_AMOUNT) {
+    throw new Error(
+      `Asset change of ${assetChange} must not exceed ${MAX_COLORED_AMOUNT}; send a larger amount`
+    )
+  }
 
   // Amount distributed across the recipient outputs (a burn has none).
   const recipientOutputs = isBurn ? [] : splitAmount(amount, split)
@@ -321,8 +350,8 @@ const createAssetTransactionInternal = async (
   }
 
   // Add asset outputs to recipient, one per split (only for transfer)
-  if (!isBurn) {
-    const toAddressDecoded = tapyrus.address.fromBase58Check(toAddress)
+  if (options.mode === "transfer") {
+    const toAddressDecoded = tapyrus.address.fromBase58Check(options.toAddress)
     const recipientScript = tapyrus.payments.cp2pkh({
       colorId: colorIdBuffer,
       hash: toAddressDecoded.hash,
@@ -372,7 +401,7 @@ export const createAndSignAssetTransaction = async (
   options: AssetSendOptions
 ): Promise<SendResult> => {
   const { feeRate = DEFAULT_FEE_RATE, split = 1, ...rest } = options
-  return createAssetTransactionInternal({ ...rest, feeRate, split })
+  return createAssetTransactionInternal({ ...rest, mode: "transfer", feeRate, split })
 }
 
 export const burnAsset = async (
@@ -380,5 +409,5 @@ export const burnAsset = async (
 ): Promise<SendResult> => {
   const { feeRate = DEFAULT_FEE_RATE, ...rest } = options
   // A burn creates no recipient output, so there is nothing to split.
-  return createAssetTransactionInternal({ ...rest, feeRate, split: 1 })
+  return createAssetTransactionInternal({ ...rest, mode: "burn", feeRate, split: 1 })
 }

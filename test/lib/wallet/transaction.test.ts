@@ -1,6 +1,6 @@
 import { createAndSignTransaction, createAndSignAssetTransaction, burnAsset, estimateFee, MAX_SPLIT } from '~/core/wallet/transaction'
 import { estimateTxSize, DEFAULT_FEE_RATE, DUST_THRESHOLD, P2PKH_INPUT_SIZE } from '~/core/constants/transaction'
-import { MAX_FEE_RATE } from '~/core/utils/validation'
+import { MAX_FEE_RATE, MAX_COLORED_AMOUNT } from '~/core/utils/validation'
 import * as tapyrus from 'tapyrusjs-lib'
 import * as esplora from '~/core/api/esplora'
 import * as hdwallet from '~/core/wallet/hdwallet'
@@ -18,6 +18,12 @@ describe('transaction', () => {
   const testAddress = TEST_ADDRESS
   const testRecipient = TEST_RECIPIENT
   const testColorId = 'c1ec2fd806701a3f55808cbec3922c38dafaa3070c48c803e9043ee3642c660b46'
+  // The recipient's pubkey hash carrying testColorId, i.e. a cp2pkh address
+  const coloredRecipient = tapyrus.address.toBase58Check(
+    tapyrus.address.fromBase58Check(TEST_RECIPIENT).hash,
+    tapyrus.networks.prod.coloredPubKeyHash,
+    Buffer.from(testColorId, 'hex')
+  )
 
   // Mock TPC UTXOs
   const mockTpcUtxos: esplora.Utxo[] = [
@@ -115,6 +121,18 @@ describe('transaction', () => {
         amount: 10000000,
         mnemonic: testMnemonic,
       })).rejects.toThrow('Invalid recipient address')
+    })
+
+    it('should throw error if recipient is a colored address', async () => {
+      // The transaction has no colored input, so a cp2pkh output would only
+      // fail on broadcast
+      await expect(createAndSignTransaction({
+        fromAddress: testAddress,
+        toAddress: coloredRecipient,
+        amount: 10000000,
+        mnemonic: testMnemonic,
+      })).rejects.toThrow('Recipient address must not be a colored address')
+      expect(mockedEsplora.broadcastTransaction).not.toHaveBeenCalled()
     })
 
     it('should throw error if fee rate is below the relayable minimum', async () => {
@@ -223,6 +241,51 @@ describe('transaction', () => {
         colorId: testColorId,
         mnemonic: testMnemonic,
       })).rejects.toThrow('Invalid recipient address')
+    })
+
+    it('should throw error if recipient address is empty', async () => {
+      // An empty recipient must be rejected, not treated as a burn
+      await expect(createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: '',
+        amount: 100,
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+      })).rejects.toThrow('Invalid recipient address')
+      expect(mockedEsplora.broadcastTransaction).not.toHaveBeenCalled()
+    })
+
+    it('should throw error if amount exceeds the maximum output amount', async () => {
+      await expect(createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: MAX_COLORED_AMOUNT + 1,
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+      })).rejects.toThrow(`Amount must not exceed ${MAX_COLORED_AMOUNT}`)
+      expect(mockedEsplora.getAddressUtxos).not.toHaveBeenCalled()
+    })
+
+    it('should throw error if asset change exceeds the maximum output amount', async () => {
+      mockedEsplora.getAddressUtxos.mockResolvedValue([
+        ...mockTpcUtxos,
+        {
+          txid: 'b'.repeat(64),
+          vout: 0,
+          status: { confirmed: true },
+          value: MAX_COLORED_AMOUNT + 1000,
+          colorId: testColorId,
+        },
+      ])
+
+      await expect(createAndSignAssetTransaction({
+        fromAddress: testAddress,
+        toAddress: testRecipient,
+        amount: 100,
+        colorId: testColorId,
+        mnemonic: testMnemonic,
+      })).rejects.toThrow(`must not exceed ${MAX_COLORED_AMOUNT}`)
+      expect(mockedEsplora.broadcastTransaction).not.toHaveBeenCalled()
     })
 
     it('should throw error if no asset UTXOs available', async () => {
@@ -649,6 +712,20 @@ describe('transaction', () => {
       // Both TPC UTXOs are needed; the colored UTXO must not be counted
       const expectedFee = (estimateTxSize(0, 2) + 2 * P2PKH_INPUT_SIZE) * DEFAULT_FEE_RATE
       expect(fee).toBe(expectedFee)
+    })
+
+    it('throws when the options are given as a bare fee rate', async () => {
+      // The old positional form would silently estimate at DEFAULT_FEE_RATE
+      await expect(
+        estimateFee(testAddress, 10000000, 10 as unknown as { feeRate?: number })
+      ).rejects.toThrow('estimateFee takes its options as an object')
+    })
+
+    it('throws the same no-UTXO error the transfer throws', async () => {
+      mockedEsplora.getAddressUtxos.mockResolvedValue([])
+
+      await expect(estimateFee(testAddress, 10000000))
+        .rejects.toThrow('No TPC UTXOs available')
     })
 
     it('throws when TPC balance is insufficient even if colored UTXOs exist', async () => {

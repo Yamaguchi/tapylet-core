@@ -1,6 +1,6 @@
 import * as tapyrus from "tapyrusjs-lib"
 import { getAddressUtxos, broadcastTransaction, isTpcColorId, type Utxo } from "../api/esplora"
-import { getKeyPairFromMnemonic } from "./hdwallet"
+import { getKeyPairFromMnemonic, getKeyPairFromLegacyMainnetWallet, type KeyPairWithNetwork } from "./hdwallet"
 import { validateAddress, isColoredAddress } from "./address"
 import { isValidAmount, isValidFeeRate, MAX_COLORED_AMOUNT } from "../utils/validation"
 import {
@@ -33,12 +33,31 @@ export interface SendOptions {
   toAddress: string
   amount: number // in tapyrus
   mnemonic: string
+  // TIP-0044 id of the network fromAddress/toAddress are encoded for.
+  networkId: number
+  // Sign with the pre-network-split key (see
+  // wallet/hdwallet.ts#getKeyPairFromLegacyMainnetWallet) instead of deriving
+  // one for networkId. Only meaningful with networkId set to the mainnet id,
+  // since the legacy key was always encoded with the mainnet address format.
+  fromLegacyMainnetWallet?: boolean
   feeRate?: number
   // Number of outputs to split the payment across (1-100). Every output gets
   // floor(amount / split); the whole remainder goes to the last output. Every
   // output must clear the dust threshold.
   split?: number
 }
+
+// Resolves the signing key and the network its address format belongs to.
+// Shared by every transaction-building function below so the "legacy key,
+// mainnet-formatted address" combination is expressed in exactly one place.
+const resolveKeyPair = (
+  mnemonic: string,
+  networkId: number,
+  fromLegacyMainnetWallet: boolean | undefined
+): Promise<KeyPairWithNetwork> =>
+  fromLegacyMainnetWallet
+    ? getKeyPairFromLegacyMainnetWallet(mnemonic)
+    : getKeyPairFromMnemonic(mnemonic, networkId)
 
 // A TPC output below the dust threshold is unspendable, so every split output
 // must clear it on its own.
@@ -80,13 +99,15 @@ export const createAndSignTransaction = async (
     toAddress,
     amount,
     mnemonic,
+    networkId,
+    fromLegacyMainnetWallet,
     feeRate = DEFAULT_FEE_RATE,
     split = 1,
   } = options
 
   validateTransferArgs(amount, feeRate, split)
   // Validate the recipient address before building/signing/broadcasting.
-  if (!validateAddress(toAddress)) {
+  if (!validateAddress(toAddress, networkId)) {
     throw new Error("Invalid recipient address")
   }
   // This transaction spends TPC inputs only, so it cannot fund a colored
@@ -113,7 +134,7 @@ export const createAndSignTransaction = async (
   })
 
   // Get keys from mnemonic
-  const { keyPair, network } = await getKeyPairFromMnemonic(mnemonic)
+  const { keyPair, network } = await resolveKeyPair(mnemonic, networkId, fromLegacyMainnetWallet)
 
   // Create transaction builder
   const txb = new tapyrus.TransactionBuilder(network)
@@ -197,6 +218,8 @@ export interface AssetSendOptions {
   amount: number
   colorId: string
   mnemonic: string
+  networkId: number
+  fromLegacyMainnetWallet?: boolean
   feeRate?: number
   // Number of colored outputs to split the payment across (1-100). Every
   // output gets floor(amount / split); the whole remainder goes to the last
@@ -210,6 +233,8 @@ export interface BurnOptions {
   amount: number
   colorId: string
   mnemonic: string
+  networkId: number
+  fromLegacyMainnetWallet?: boolean
   feeRate?: number
 }
 
@@ -242,6 +267,8 @@ type AssetTransactionInternalOptions = {
   amount: number
   colorId: string
   mnemonic: string
+  networkId: number
+  fromLegacyMainnetWallet?: boolean
   feeRate: number
   split: number
 } & ({ mode: "transfer"; toAddress: string } | { mode: "burn" })
@@ -250,7 +277,7 @@ type AssetTransactionInternalOptions = {
 const createAssetTransactionInternal = async (
   options: AssetTransactionInternalOptions
 ): Promise<SendResult> => {
-  const { fromAddress, amount, colorId, mnemonic, feeRate, split } = options
+  const { fromAddress, amount, colorId, mnemonic, networkId, fromLegacyMainnetWallet, feeRate, split } = options
   const isBurn = options.mode === "burn"
 
   if (!Number.isInteger(amount) || amount <= 0) {
@@ -265,7 +292,7 @@ const createAssetTransactionInternal = async (
     throw new Error("Invalid fee rate")
   }
   // Validate the recipient address for transfers (burn has no recipient).
-  if (options.mode === "transfer" && !validateAddress(options.toAddress)) {
+  if (options.mode === "transfer" && !validateAddress(options.toAddress, networkId)) {
     throw new Error("Invalid recipient address")
   }
   validateSplitRange(split)
@@ -322,7 +349,7 @@ const createAssetTransactionInternal = async (
   )
 
   // Get keys from mnemonic
-  const { keyPair, network } = await getKeyPairFromMnemonic(mnemonic)
+  const { keyPair, network } = await resolveKeyPair(mnemonic, networkId, fromLegacyMainnetWallet)
 
   // Create transaction builder
   const txb = new tapyrus.TransactionBuilder(network)

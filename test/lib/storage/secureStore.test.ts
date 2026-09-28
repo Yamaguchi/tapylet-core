@@ -10,8 +10,9 @@ describe('WalletStorage', () => {
   const password = 'correct horse battery staple'
   const walletData: WalletData = {
     mnemonic: 'test test test test test test test test test test test junk',
-    address: '1ExampleAddress',
-    publicKey: '02abcdef',
+    networks: {
+      15215628: { address: '1ExampleAddress', publicKey: '02abcdef' },
+    },
     createdAt: 1700000000000,
   }
 

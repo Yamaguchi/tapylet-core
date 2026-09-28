@@ -1,4 +1,5 @@
 export * from "./mnemonic"
+export * from "./networkFormat"
 export * from "./hdwallet"
 export * from "./address"
 export * from "./transaction"

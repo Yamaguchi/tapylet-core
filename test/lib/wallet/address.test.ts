@@ -8,7 +8,7 @@ describe('address', () => {
   describe('generateAddress', () => {
     it('should generate a valid Tapyrus address from public key', async () => {
       const keys = await createHDWallet(testMnemonic, NetworkId.TAPYRUS_API)
-      const address = generateAddress(keys.publicKey, NetworkId.TAPYRUS_API)
+      const address = generateAddress(keys.publicKey)
 
       expect(typeof address).toBe('string')
       expect(address.length).toBeGreaterThan(25)
@@ -16,67 +16,58 @@ describe('address', () => {
 
     it('should generate consistent address for same public key', async () => {
       const keys = await createHDWallet(testMnemonic, NetworkId.TAPYRUS_API)
-      const address1 = generateAddress(keys.publicKey, NetworkId.TAPYRUS_API)
-      const address2 = generateAddress(keys.publicKey, NetworkId.TAPYRUS_API)
+      const address1 = generateAddress(keys.publicKey)
+      const address2 = generateAddress(keys.publicKey)
 
       expect(address1).toBe(address2)
     })
 
     it('should generate address starting with 1 for the mainnet network', async () => {
       const keys = await createHDWallet(testMnemonic, NetworkId.TAPYRUS_API)
-      const address = generateAddress(keys.publicKey, NetworkId.TAPYRUS_API)
+      const address = generateAddress(keys.publicKey)
 
       // Prod P2PKH addresses start with '1'
       expect(address[0]).toBe('1')
     })
 
-    it('should generate a different address for the same public key on testnet', async () => {
-      const keys = await createHDWallet(testMnemonic, NetworkId.TAPYRUS_API)
-      const mainnetAddress = generateAddress(keys.publicKey, NetworkId.TAPYRUS_API)
-      const testnetAddress = generateAddress(keys.publicKey, NetworkId.TESTNET)
+    it('should generate a prod-format address for a testnet key', async () => {
+      const keys = await createHDWallet(testMnemonic, NetworkId.TESTNET)
+      const address = generateAddress(keys.publicKey)
 
-      expect(testnetAddress).not.toBe(mainnetAddress)
+      // Testnet is an operational network: it uses the prod parameters.
+      expect(address[0]).toBe('1')
+      expect(validateAddress(address)).toBe(true)
     })
 
     it('should throw error for invalid public key', () => {
       const invalidPublicKey = new Uint8Array(32) // wrong length
-      expect(() => generateAddress(invalidPublicKey, NetworkId.TAPYRUS_API)).toThrow()
-    })
-
-    it('should throw for an unsupported network id', async () => {
-      const keys = await createHDWallet(testMnemonic, NetworkId.TAPYRUS_API)
-      expect(() => generateAddress(keys.publicKey, 1)).toThrow(
-        'Unsupported Tapyrus network id: 1'
-      )
+      expect(() => generateAddress(invalidPublicKey)).toThrow()
     })
   })
 
   describe('validateAddress', () => {
     it('should return true for a valid mainnet address', async () => {
       const keys = await createHDWallet(testMnemonic, NetworkId.TAPYRUS_API)
-      const address = generateAddress(keys.publicKey, NetworkId.TAPYRUS_API)
+      const address = generateAddress(keys.publicKey)
 
-      expect(validateAddress(address, NetworkId.TAPYRUS_API)).toBe(true)
+      expect(validateAddress(address)).toBe(true)
     })
 
-    it('should return false when the address belongs to a different network', async () => {
-      const keys = await createHDWallet(testMnemonic, NetworkId.TAPYRUS_API)
-      const address = generateAddress(keys.publicKey, NetworkId.TAPYRUS_API)
-
-      expect(validateAddress(address, NetworkId.TESTNET)).toBe(false)
+    it('should return false for a dev-format address', () => {
+      expect(validateAddress('mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhex')).toBe(false)
     })
 
     it('should return false for invalid address', () => {
-      expect(validateAddress('invalid_address', NetworkId.TAPYRUS_API)).toBe(false)
+      expect(validateAddress('invalid_address')).toBe(false)
     })
 
     it('should return false for empty string', () => {
-      expect(validateAddress('', NetworkId.TAPYRUS_API)).toBe(false)
+      expect(validateAddress('')).toBe(false)
     })
 
     it('should return false for address with invalid checksum', () => {
       // Invalid address (random string)
-      expect(validateAddress('1InvalidAddressXXXXXXXXXXXXXXXXXX', NetworkId.TAPYRUS_API)).toBe(false)
+      expect(validateAddress('1InvalidAddressXXXXXXXXXXXXXXXXXX')).toBe(false)
     })
   })
 

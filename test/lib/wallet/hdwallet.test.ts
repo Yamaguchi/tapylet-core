@@ -54,23 +54,26 @@ describe('hdwallet', () => {
       expect(['K', 'L']).toContain(keys.wif[0])
     })
 
-    it('should generate WIF starting with c for the testnet network', async () => {
+    it('should generate a prod-format WIF for the testnet network too', async () => {
       const keys = await createHDWallet(testMnemonic, NetworkId.TESTNET)
-      // Dev/testnet WIF (compressed) starts with 'c'
-      expect(keys.wif[0]).toBe('c')
+      // Testnet is an operational network: it uses the prod parameters.
+      expect(['K', 'L']).toContain(keys.wif[0])
     })
 
-    it('should throw for an unsupported network id', async () => {
-      await expect(createHDWallet(testMnemonic, 999999)).rejects.toThrow(
-        'Unsupported Tapyrus network id: 999999'
-      )
+    it('should accept a custom network id and use it as the coin type', async () => {
+      const custom = await createHDWallet(testMnemonic, 999999)
+      const testnet = await createHDWallet(testMnemonic, NetworkId.TESTNET)
+
+      expect(['K', 'L']).toContain(custom.wif[0])
+      expect(Buffer.from(custom.privateKey).toString('hex'))
+        .not.toBe(Buffer.from(testnet.privateKey).toString('hex'))
     })
   })
 
   describe('getPublicKeyFromWIF', () => {
     it('should extract public key from WIF', async () => {
       const keys = await createHDWallet(testMnemonic, NetworkId.TAPYRUS_API)
-      const publicKey = getPublicKeyFromWIF(keys.wif, NetworkId.TAPYRUS_API)
+      const publicKey = getPublicKeyFromWIF(keys.wif)
 
       expect(publicKey).toBeInstanceOf(Uint8Array)
       expect(publicKey).toHaveLength(33)
@@ -80,18 +83,19 @@ describe('hdwallet', () => {
   })
 
   describe('createLegacyMainnetWallet', () => {
-    it('matches what createHDWallet(mnemonic, NetworkId.TESTNET) derives today', async () => {
+    it('currently yields the same key and WIF as createHDWallet(mnemonic, NetworkId.TESTNET)', async () => {
       // The legacy formula is pinned independently of the testnet formula on
       // purpose (see wallet/hdwallet.ts), but as long as nothing has since
-      // changed testnet's derivation, the raw keys must still coincide.
+      // changed testnet's derivation, the results must coincide.
       const legacy = await createLegacyMainnetWallet(testMnemonic)
       const testnet = await createHDWallet(testMnemonic, NetworkId.TESTNET)
 
       expect(Buffer.from(legacy.privateKey).toString('hex'))
         .toBe(Buffer.from(testnet.privateKey).toString('hex'))
+      expect(legacy.wif).toBe(testnet.wif)
     })
 
-    it('always encodes its WIF with the mainnet prefix, unlike NetworkId.TESTNET', async () => {
+    it('encodes its WIF with the mainnet prefix', async () => {
       const legacy = await createLegacyMainnetWallet(testMnemonic)
       expect(['K', 'L']).toContain(legacy.wif[0])
     })

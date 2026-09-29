@@ -33,12 +33,11 @@ export interface SendOptions {
   toAddress: string
   amount: number // in tapyrus
   mnemonic: string
-  // TIP-0044 id of the network fromAddress/toAddress are encoded for.
+  // TIP-0044 id of the network the signing key is derived for (BIP44 coin type).
   networkId: number
   // Sign with the pre-network-split key (see
   // wallet/hdwallet.ts#getKeyPairFromLegacyMainnetWallet) instead of deriving
-  // one for networkId. Only meaningful with networkId set to the mainnet id,
-  // since the legacy key was always encoded with the mainnet address format.
+  // one for networkId. Only meaningful with networkId set to the mainnet id.
   fromLegacyMainnetWallet?: boolean
   feeRate?: number
   // Number of outputs to split the payment across (1-100). Every output gets
@@ -47,9 +46,9 @@ export interface SendOptions {
   split?: number
 }
 
-// Resolves the signing key and the network its address format belongs to.
-// Shared by every transaction-building function below so the "legacy key,
-// mainnet-formatted address" combination is expressed in exactly one place.
+// Resolves the signing key. Shared by every transaction-building function
+// below so the choice between the legacy key and the per-network key is made
+// in exactly one place.
 const resolveKeyPair = (
   mnemonic: string,
   networkId: number,
@@ -107,7 +106,7 @@ export const createAndSignTransaction = async (
 
   validateTransferArgs(amount, feeRate, split)
   // Validate the recipient address before building/signing/broadcasting.
-  if (!validateAddress(toAddress, networkId)) {
+  if (!validateAddress(toAddress)) {
     throw new Error("Invalid recipient address")
   }
   // This transaction spends TPC inputs only, so it cannot fund a colored
@@ -292,7 +291,7 @@ const createAssetTransactionInternal = async (
     throw new Error("Invalid fee rate")
   }
   // Validate the recipient address for transfers (burn has no recipient).
-  if (options.mode === "transfer" && !validateAddress(options.toAddress, networkId)) {
+  if (options.mode === "transfer" && !validateAddress(options.toAddress)) {
     throw new Error("Invalid recipient address")
   }
   validateSplitRange(split)

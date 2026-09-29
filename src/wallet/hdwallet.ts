@@ -1,6 +1,5 @@
 import * as tapyrus from "tapyrusjs-lib"
 import { mnemonicToSeed } from "./mnemonic"
-import { networkForId } from "./networkFormat"
 
 // Re-export NetworkId from tapyrusjs-lib
 export const NetworkId = tapyrus.NetworkId
@@ -15,19 +14,19 @@ export interface HDWalletKeys {
   wif: string
 }
 
-// networkId has no default: it picks both the derivation path (via BIP44's
-// coin type) and the address/WIF encoding, so silently assuming one here
-// would mean a caller that forgets to pass it gets a wallet for a network it
-// never asked for instead of a type error.
+// Address/WIF/bip32 encoding is always the prod format (Tapyrus separates
+// Prod from Dev independently of the network id). networkId only picks the
+// derivation path's BIP44 coin type, and has no default so a caller that
+// forgets to pass it gets a type error instead of a wallet for a network it
+// never asked for.
 export const createHDWallet = async (
   mnemonic: string,
   networkId: number,
   index = 0
 ): Promise<HDWalletKeys> => {
   const seed = await mnemonicToSeed(mnemonic)
-  const network = networkForId(networkId)
   const derivationPath = getDerivationPath(networkId, index)
-  const root = tapyrus.bip32.fromSeed(seed, network)
+  const root = tapyrus.bip32.fromSeed(seed, tapyrus.networks.prod)
   const child = root.derivePath(derivationPath)
 
   if (!child.privateKey) {
@@ -41,9 +40,8 @@ export const createHDWallet = async (
   }
 }
 
-export const getPublicKeyFromWIF = (wif: string, networkId: number): Uint8Array => {
-  const network = networkForId(networkId)
-  const keyPair = tapyrus.ECPair.fromWIF(wif, network)
+export const getPublicKeyFromWIF = (wif: string): Uint8Array => {
+  const keyPair = tapyrus.ECPair.fromWIF(wif, tapyrus.networks.prod)
   return keyPair.publicKey
 }
 
@@ -59,7 +57,7 @@ export const getKeyPairFromMnemonic = async (
   index = 0
 ): Promise<KeyPairWithNetwork> => {
   const keys = await createHDWallet(mnemonic, networkId, index)
-  const network = networkForId(networkId)
+  const network = tapyrus.networks.prod
   const keyPair = tapyrus.ECPair.fromWIF(keys.wif, network)
   return {
     keyPair,
@@ -72,14 +70,16 @@ export const getKeyPairFromMnemonic = async (
 //
 // Before mainnet and testnet had separate keys, every wallet derived its one
 // key with coin type = the testnet TIP-0044 id (the value createHDWallet
-// silently defaulted to) and always encoded it with the mainnet address
-// format. Real TPC and tokens were sent to that address, so this exact
-// derivation has to keep working forever, for any wallet created under that
-// scheme, independent of whatever createHDWallet's testnet formula becomes in
-// the future. It is written out on its own rather than calling
-// createHDWallet(mnemonic, NetworkId.TESTNET, index) so a later change to how
-// testnet keys are derived (e.g. a different account level) cannot silently
-// break recovery of pre-split funds.
+// silently defaulted to) and encoded it with the prod address format. Real
+// TPC and tokens were sent to that address on mainnet, so this exact
+// derivation has to keep working forever, independent of whatever
+// createHDWallet's testnet formula becomes in the future. It is written out
+// on its own rather than calling createHDWallet(mnemonic, NetworkId.TESTNET,
+// index) so a later change to how testnet keys are derived (e.g. a different
+// account level) cannot silently break recovery of pre-split funds.
+//
+// Today it yields exactly the same key, address and WIF as
+// createHDWallet(mnemonic, NetworkId.TESTNET, index).
 const LEGACY_MAINNET_COIN_TYPE = tapyrus.NetworkId.TESTNET
 const getLegacyMainnetDerivationPath = (index = 0): string =>
   `m/44'/${LEGACY_MAINNET_COIN_TYPE}'/0'/0/${index}`

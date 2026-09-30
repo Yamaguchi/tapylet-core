@@ -35,8 +35,9 @@ export interface WalletData {
   encryptedMnemonic?: string
   /**
    * @deprecated Single-network layout used before mainnet/testnet had
-   * separate keys. Kept optional so a pre-split record can be read and
-   * migrated into `networks`/`legacyMainnetAddress`. Do not write these fields.
+   * separate keys. `WalletStorage.getWallet` moves `address` into
+   * `legacyMainnetAddress` and returns an empty `networks` for such a record;
+   * the host then regenerates the per-network keys. Do not write these fields.
    */
   address?: string
   /** @deprecated see `address` above. */

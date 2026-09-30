@@ -2,7 +2,7 @@ import * as tapyrus from "tapyrusjs-lib"
 import { Metadata } from "tapyrusjs-lib"
 import * as ecc from "../lib/secp256k1-compat"
 import { getAddressUtxos, broadcastTransaction, isTpcColorId, type Utxo } from "../api/esplora"
-import { getKeyPairFromMnemonic, getKeyPairFromLegacyMainnetWallet } from "./hdwallet"
+import { resolveKeyPair } from "./resolveKeyPair"
 import { isValidAmount, isValidFeeRate, MAX_COLORED_AMOUNT } from "../utils/validation"
 import {
   DUST_THRESHOLD,
@@ -100,9 +100,11 @@ export const issueToken = async (options: IssueOptions): Promise<IssueResult> =>
   const effectiveSplit = tokenType === "nft" ? 1 : split
 
   // Get keys from mnemonic
-  const { keyPair, publicKey, network } = fromLegacyMainnetWallet
-    ? await getKeyPairFromLegacyMainnetWallet(mnemonic)
-    : await getKeyPairFromMnemonic(mnemonic, networkId)
+  const { keyPair, publicKey, network } = await resolveKeyPair(
+    mnemonic,
+    networkId,
+    fromLegacyMainnetWallet
+  )
 
   // Create Metadata instance
   const metadata = new Metadata(metadataFields)

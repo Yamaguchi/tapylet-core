@@ -1,6 +1,6 @@
 import * as tapyrus from "tapyrusjs-lib"
 import { getAddressUtxos, broadcastTransaction, isTpcColorId, type Utxo } from "../api/esplora"
-import { getKeyPairFromMnemonic, getKeyPairFromLegacyMainnetWallet, type KeyPairWithNetwork } from "./hdwallet"
+import { resolveKeyPair } from "./resolveKeyPair"
 import { validateAddress, isColoredAddress } from "./address"
 import { isValidAmount, isValidFeeRate, MAX_COLORED_AMOUNT } from "../utils/validation"
 import {
@@ -45,18 +45,6 @@ export interface SendOptions {
   // output must clear the dust threshold.
   split?: number
 }
-
-// Resolves the signing key. Shared by every transaction-building function
-// below so the choice between the legacy key and the per-network key is made
-// in exactly one place.
-const resolveKeyPair = (
-  mnemonic: string,
-  networkId: number,
-  fromLegacyMainnetWallet: boolean | undefined
-): Promise<KeyPairWithNetwork> =>
-  fromLegacyMainnetWallet
-    ? getKeyPairFromLegacyMainnetWallet(mnemonic)
-    : getKeyPairFromMnemonic(mnemonic, networkId)
 
 // A TPC output below the dust threshold is unspendable, so every split output
 // must clear it on its own.
